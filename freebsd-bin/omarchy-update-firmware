@@ -1,0 +1,15 @@
+#!/bin/bash
+
+# omarchy:summary=Update system firmware using fwupd. Ensures the fwupd EFI binary is installed
+# omarchy:requires-sudo=true
+
+set -e
+
+echo -e "\e[32mUpdate Firmware\e[0m"
+
+if omarchy-cmd-missing fwupdmgr; then
+  omarchy-pkg-add fwupd
+fi
+
+fwupdmgr refresh --force
+sudo fwupdmgr update

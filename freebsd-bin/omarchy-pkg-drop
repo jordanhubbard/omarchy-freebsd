@@ -1,0 +1,25 @@
+#!/bin/bash
+
+# omarchy:summary=Remove all the named packages from the system if they're installed (otherwise ignore).
+# omarchy:args=<packages...>
+# omarchy:requires-sudo=true
+
+source "$OMARCHY_PATH/freebsd/pkg.sh"
+
+installed=()
+declare -A selected=()
+
+for pkg in "$@"; do
+  origin=$(pkg_origin "$pkg")
+  [[ $origin == @base || $origin == - ]] && continue
+  pkg_installed "$pkg" || continue
+  if [[ -z ${selected[$origin]} ]]; then
+    installed+=("$origin")
+    selected[$origin]=1
+  fi
+done
+
+if (( ${#installed[@]} > 0 )); then
+  pkg_as_root pkg delete -y "${installed[@]}"
+  pkg_as_root pkg autoremove -y >/dev/null
+fi

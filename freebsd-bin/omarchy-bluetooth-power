@@ -1,0 +1,24 @@
+#!/bin/bash
+
+# omarchy:summary=Turn Bluetooth on or off
+# omarchy:group=bluetooth
+# omarchy:args=<on|off|toggle|is-on>
+
+# FreeBSD version: starts and stops FreeBSD's Bluetooth stack on each
+# controller through omarchy-bluetooth, where Arch soft-blocks the radio with
+# rfkill.
+
+case ${1:-} in
+  on | off | is-on) exec omarchy-bluetooth power "$1" ;;
+  toggle)
+    if omarchy-bluetooth power is-on; then
+      exec omarchy-bluetooth power off
+    else
+      exec omarchy-bluetooth power on
+    fi
+    ;;
+  *)
+    echo "Usage: omarchy-bluetooth-power <on|off|toggle|is-on>" >&2
+    exit 1
+    ;;
+esac

@@ -1,0 +1,6 @@
+#!/bin/bash
+
+# omarchy:summary=Returns true if external power is connected.
+
+# acpi_acad(4): hw.acpi.acline is 1 while external power is connected.
+[[ $(sysctl -n hw.acpi.acline 2>/dev/null) == 1 ]]

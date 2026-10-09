@@ -1,0 +1,57 @@
+#!%%LOCALBASE%%/bin/bash
+
+# timedatectl compatibility for Omarchy on FreeBSD, backed by the zoneinfo
+# database and tzsetup(8).
+
+zoneinfo=/usr/share/zoneinfo
+
+current_zone() {
+  if [[ -r /var/db/zoneinfo ]]; then
+    cat /var/db/zoneinfo
+  elif [[ -L /etc/localtime ]]; then
+    readlink /etc/localtime | sed "s|^$zoneinfo/||"
+  else
+    echo UTC
+  fi
+}
+
+case "${1:-status}" in
+  list-timezones)
+    (cd "$zoneinfo" && find . -type f ! -name '*.tab' ! -name '*.zi' ! -name 'leapseconds' ! -name 'tzdata.zi' ! -path './posix/*' ! -path './right/*' ! -path './Etc/*' | sed 's|^\./||' | grep -E '^[A-Z]' | sort)
+    ;;
+  set-timezone)
+    zone=${2:?Usage: timedatectl set-timezone ZONE}
+    [[ -f $zoneinfo/$zone ]] || { echo "Invalid time zone '$zone'" >&2; exit 1; }
+    if ((EUID == 0)); then
+      tzsetup "$zone"
+    else
+      sudo tzsetup "$zone"
+    fi
+    ;;
+  show)
+    shift
+    property="" value_only=0
+    while (($#)); do
+      case "$1" in
+        -p | --property) property=$2; shift ;;
+        --property=*) property=${1#*=} ;;
+        --value) value_only=1 ;;
+      esac
+      shift
+    done
+    if [[ -z $property || $property == Timezone ]]; then
+      if ((value_only)); then current_zone; else echo "Timezone=$(current_zone)"; fi
+    fi
+    ;;
+  status)
+    printf '               Local time: %s\n           Universal time: %s\n                Time zone: %s\n' \
+      "$(date)" "$(date -u)" "$(current_zone)"
+    ;;
+  set-ntp | set-local-rtc | timesync-status | show-timesync)
+    exit 0
+    ;;
+  *)
+    echo "timedatectl: '$1' is not supported on FreeBSD" >&2
+    exit 1
+    ;;
+esac

@@ -1,0 +1,13 @@
+#!/bin/bash
+
+# omarchy:summary=Manage sleep and idle inhibition during an update
+# omarchy:args=<start|stop>
+# omarchy:hidden=true
+
+# Arch holds a logind sleep inhibitor for the length of an update. FreeBSD only
+# suspends on request or through the lid switch sysctl, neither of which an
+# update can block, so there is nothing to hold.
+case "${1:-}" in
+  start | stop) exit 0 ;;
+  *) echo "Usage: omarchy-update-stay-awake <start|stop>" >&2; exit 1 ;;
+esac

@@ -1,0 +1,25 @@
+#!%%LOCALBASE%%/bin/bash
+
+# setpriv compatibility for Omarchy on FreeBSD. Omarchy only uses setpriv for
+# --pdeathsig, so a child dies with the Quickshell process that spawned it.
+# FreeBSD offers the same through procctl(2) PROC_PDEATHSIG_CTL, which the
+# pdeathsig helper applies before exec'ing the command.
+
+signal=""
+while (($#)); do
+  case "$1" in
+    --pdeathsig) signal=$2; shift ;;
+    --pdeathsig=*) signal=${1#*=} ;;
+    --) shift; break ;;
+    -*) ;;
+    *) break ;;
+  esac
+  shift
+done
+
+(($#)) || { echo "Usage: setpriv [--pdeathsig SIG] command [args...]" >&2; exit 1; }
+
+if [[ -n $signal && -x %%PREFIX%%/libexec/omarchy/pdeathsig ]]; then
+  exec %%PREFIX%%/libexec/omarchy/pdeathsig "$signal" "$@"
+fi
+exec "$@"

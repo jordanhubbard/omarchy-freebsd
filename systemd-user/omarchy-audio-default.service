@@ -1,0 +1,7 @@
+[Unit]
+Description=Use FreeBSD's default sound device as PipeWire's default
+After=graphical-session.target
+
+[Service]
+Type=oneshot
+ExecStart=%%PREFIX%%/libexec/omarchy/audio-default

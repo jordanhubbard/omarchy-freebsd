@@ -1,0 +1,19 @@
+#!/bin/bash
+
+# omarchy:summary=Update system packages with pacman
+# omarchy:requires-sudo=true
+
+set -e
+
+echo -e "\e[32m\nUpdate system packages\e[0m"
+
+sudo pkg update
+sudo pkg upgrade -y
+
+# Base system updates for binary RELEASE installs that are not on pkgbase.
+# pkgbase systems had their base packages upgraded by pkg above.
+if [[ $(freebsd-version -u) == *-RELEASE* ]] && ! pkg info -e FreeBSD-runtime 2>/dev/null; then
+  echo -e "\e[32m\nUpdate FreeBSD base system\e[0m"
+  sudo PAGER=cat freebsd-update --not-running-from-cron fetch
+  sudo freebsd-update install || true
+fi

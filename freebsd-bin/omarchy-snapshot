@@ -1,0 +1,43 @@
+#!/bin/bash
+
+# omarchy:summary=Create or restore system snapshots with snapper
+# omarchy:args=<create|restore>
+# omarchy:requires-sudo=true
+
+set -e
+
+COMMAND="$1"
+
+if [[ -z $COMMAND ]]; then
+  echo "Usage: omarchy-snapshot <create|restore>" >&2
+  exit 1
+fi
+
+# FreeBSD's equivalent of Snapper snapshots selectable at boot is a ZFS boot
+# environment, managed with bectl(8) and chosen from the loader menu.
+if omarchy-cmd-missing bectl || ! bectl list >/dev/null 2>&1; then
+  exit 127 # omarchy-update can use this to just ignore if boot environments are not available
+fi
+
+case "$COMMAND" in
+create)
+  version=$(omarchy-version 2>/dev/null || echo unknown)
+  name="omarchy-${version//[^A-Za-z0-9._-]/_}-$(date +%Y%m%d-%H%M%S)"
+
+  echo -e "\e[32mCreate boot environment\e[0m"
+  sudo bectl create "$name"
+
+  # Keep the ten most recent Omarchy boot environments.
+  bectl list -H -c creation | awk '$1 ~ /^omarchy-/ && $2 !~ /[NR]/ { print $1 }' | head -n -10 |
+    while read -r old; do sudo bectl destroy -o "$old"; done
+
+  echo "Boot environment $name can be selected from the loader menu."
+  ;;
+restore)
+  mapfile -t environments < <(bectl list -H -c creation | awk '$2 !~ /N/ { print $1 }' | tac)
+  (( ${#environments[@]} )) || { echo "No other boot environments to restore." >&2; exit 1; }
+  choice=$(printf '%s\n' "${environments[@]}" | gum choose --header "Boot environment to activate on next boot") || exit 1
+  sudo bectl activate "$choice"
+  echo "Reboot to use $choice."
+  ;;
+esac

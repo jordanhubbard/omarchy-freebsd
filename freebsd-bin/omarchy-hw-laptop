@@ -1,0 +1,12 @@
+#!/bin/bash
+
+# omarchy:summary=Returns true when running on a laptop (has a lid or laptop chassis).
+
+# A lid switch, or an SMBIOS chassis type of a portable machine.
+sysctl -N dev.acpi_lid.0 >/dev/null 2>&1 && exit 0
+
+case $(kenv -q smbios.chassis.type 2>/dev/null) in
+  Portable | Laptop | Notebook | "Sub Notebook" | Tablet | Convertible | Detachable) exit 0 ;;
+esac
+
+exit 1

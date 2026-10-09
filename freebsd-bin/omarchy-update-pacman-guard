@@ -1,0 +1,7 @@
+#!/bin/bash
+
+# omarchy:summary=Prevent direct pacman system upgrades from bypassing omarchy update.
+# omarchy:hidden=true
+
+# Guards direct pacman upgrades on Arch. pkg(8) has no hook to guard.
+exit 0

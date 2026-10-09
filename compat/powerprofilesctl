@@ -1,0 +1,77 @@
+#!%%LOCALBASE%%/bin/bash
+
+# powerprofilesctl compatibility for Omarchy on FreeBSD.
+#
+# power-profiles-daemon has no FreeBSD backend. The three standard profiles map
+# onto the energy/performance preference of hwpstate_intel(4) and
+# hwpstate_amd(4) CPUs (dev.hwpstate_*.N.epp: 0 = performance, 100 = power
+# saving). Setting the EPP needs root; without it the choice is still recorded
+# so Omarchy's menus and per-power-source defaults behave consistently.
+
+state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/powerprofiles"
+state_file="$state_dir/current"
+profiles=(performance balanced power-saver)
+
+epp_oids() {
+  sysctl -N dev.hwpstate_intel dev.hwpstate_amd 2>/dev/null | grep -E '\.epp$'
+}
+
+current_profile() {
+  local oid epp
+  if [[ -r $state_file ]]; then
+    cat "$state_file"
+    return
+  fi
+  oid=$(epp_oids | head -n 1)
+  if [[ -n $oid ]]; then
+    epp=$(sysctl -n "$oid")
+    if ((epp <= 25)); then echo performance
+    elif ((epp >= 75)); then echo power-saver
+    else echo balanced
+    fi
+    return
+  fi
+  echo balanced
+}
+
+case "${1:-list}" in
+  get)
+    current_profile
+    ;;
+  list)
+    active=$(current_profile)
+    for profile in "${profiles[@]}"; do
+      if [[ $profile == "$active" ]]; then printf '* %s:\n' "$profile"; else printf '  %s:\n' "$profile"; fi
+      printf '    Driver:     freebsd-epp\n\n'
+    done
+    ;;
+  set)
+    profile=${2:?Usage: powerprofilesctl set PROFILE}
+    case "$profile" in
+      performance) epp=0 ;;
+      balanced) epp=50 ;;
+      power-saver) epp=100 ;;
+      *) echo "Invalid profile name '$profile'" >&2; exit 1 ;;
+    esac
+    mkdir -p "$state_dir"
+    printf '%s\n' "$profile" >"$state_file"
+    while IFS= read -r oid; do
+      if ((EUID == 0)); then
+        sysctl "$oid=$epp" >/dev/null
+      else
+        sudo -n sysctl "$oid=$epp" >/dev/null 2>&1
+      fi
+    done < <(epp_oids)
+    exit 0
+    ;;
+  launch | query-battery-aware | configure-action | configure-battery-aware)
+    exit 0
+    ;;
+  version)
+    echo "omarchy-freebsd"
+    ;;
+  *)
+    echo "powerprofilesctl: unsupported command '$1'" >&2
+    exit 1
+    ;;
+esac

@@ -1,0 +1,7 @@
+#!/bin/bash
+
+# omarchy:summary=Show a fuzzy-finder TUI for picking new AUR packages to install.
+# omarchy:requires-sudo=true
+
+echo "The AUR is specific to Arch Linux and is not available on FreeBSD; use 'omarchy pkg install' for FreeBSD packages." >&2
+exit 1

@@ -1,0 +1,226 @@
+#!/bin/bash
+
+# omarchy:summary=Wi-Fi state and actions for the shell's network panel, through wpa_supplicant
+# omarchy:group=network
+# omarchy:args=status | networks | scan | connect <ssid> [--psk] | disconnect | forget <ssid> | on | off
+# omarchy:hidden=true
+
+# FreeBSD has no NetworkManager, so the network panel drives wpa_supplicant(8)
+# through this command. Joining and forgetting networks goes through
+# wpa_cli(8) on a control socket the wheel group may use; only setting up the
+# Wi-Fi interface and switching the radio need root, asked for with pkexec
+# since the panel has no terminal to type a sudo password into.
+
+set -o pipefail
+
+WPA_CONF=/etc/wpa_supplicant.conf
+CTRL_DIR=/var/run/wpa_supplicant
+
+# The radios net80211 knows about (rtw880, iwlwifi0, ...) and the wlan
+# interfaces rc.conf builds on them.
+radios() {
+  sysctl -n net.wlan.devices 2>/dev/null | tr ' ' '\n' | sed '/^$/d'
+}
+
+wlan_iface() {
+  local radio iface
+  for iface in $(ifconfig -l 2>/dev/null); do
+    [[ $iface == wlan* ]] && { echo "$iface"; return 0; }
+  done
+  # Configured in rc.conf but not created yet (radio switched off at boot).
+  radio=$(radios | head -n 1)
+  [[ -n $radio ]] || return 1
+  iface=$(sysrc -n "wlans_$radio" 2>/dev/null | awk '{ print $1 }')
+  [[ -n $iface ]] && echo "$iface"
+}
+
+wpa() {
+  wpa_cli -p "$CTRL_DIR" -i "$iface" "$@"
+}
+
+wpa_ready() {
+  [[ -n $iface ]] && wpa ping 2>/dev/null | grep -qx PONG
+}
+
+json_status() {
+  local radio up connected ssid wired wired_up enabled controllable
+  radio=$(radios | head -n 1)
+  iface=$(wlan_iface)
+  up=false connected=false ssid="" controllable=false
+  if [[ -n $iface ]] && ifconfig "$iface" >/dev/null 2>&1; then
+    ifconfig "$iface" | grep -q '<UP' && up=true
+    if ifconfig "$iface" | grep -q 'status: associated'; then
+      connected=true
+      ssid=$(ifconfig "$iface" | awk '/^[[:space:]]*ssid / { sub(/^[[:space:]]*ssid /, ""); sub(/ channel .*/, ""); print; exit }')
+    fi
+  fi
+  wpa_ready && controllable=true
+  enabled=$up
+
+  # Wired interfaces: everything with an Ethernet medium that is not wireless.
+  wired=$(for i in $(ifconfig -l); do
+    ifconfig "$i" 2>/dev/null | grep -q 'media: Ethernet' || continue
+    if ifconfig "$i" | grep -q 'status: active'; then wired_up=true; else wired_up=false; fi
+    jq -cn --arg name "$i" --argjson connected "$wired_up" '{ name: $name, connected: $connected }'
+  done | jq -cs .)
+
+  jq -cn --arg radio "$radio" --arg iface "$iface" --argjson up "$up" \
+    --argjson connected "$connected" --arg ssid "$ssid" --argjson enabled "$enabled" \
+    --argjson controllable "$controllable" --argjson wired "${wired:-[]}" '{
+      radio: $radio, iface: $iface, available: ($radio != ""), configured: ($iface != ""),
+      enabled: $enabled, up: $up, controllable: $controllable,
+      connected: $connected, ssid: $ssid, wired: $wired
+    }'
+}
+
+# Scan results merged with saved networks, one entry per SSID (its strongest
+# BSSID). security is one of open, owe, wep, wpa-psk, wpa2-psk, sae, wpa-eap,
+# wpa2-eap; signal runs from 0 to 1.
+json_networks() {
+  iface=$(wlan_iface)
+  wpa_ready || { echo '[]'; return 0; }
+  local current
+  current=$(wpa status | sed -n 's/^ssid=//p')
+  {
+    wpa scan_results | tail -n +2 | awk -F '\t' 'NF >= 5 && $5 != "" {
+      sec = "open"
+      if ($4 ~ /EAP/) sec = ($4 ~ /WPA2|RSN/) ? "wpa2-eap" : "wpa-eap"
+      else if ($4 ~ /SAE/) sec = "sae"
+      else if ($4 ~ /WPA2-PSK|RSN-PSK/) sec = "wpa2-psk"
+      else if ($4 ~ /WPA-PSK/) sec = "wpa-psk"
+      else if ($4 ~ /OWE/) sec = "owe"
+      else if ($4 ~ /WEP/) sec = "wep"
+      sig = ($3 + 90) / 60; if (sig < 0) sig = 0; if (sig > 1) sig = 1
+      printf "scan\t%s\t%.2f\t%s\n", $5, sig, sec
+    }'
+    wpa list_networks | tail -n +2 | awk -F '\t' '$2 != "" { printf "known\t%s\t%s\n", $2, $1 }'
+  } | jq -R -s -c --arg current "$current" '
+    split("\n") | map(select(length > 0) | split("\t")) as $rows
+    | ($rows | map(select(.[0] == "known")) | map({ key: .[1], value: (.[2] | tonumber) }) | from_entries) as $known
+    | $rows | map(select(.[0] == "scan"))
+    | group_by(.[1]) | map(max_by(.[2] | tonumber))
+    | map({ ssid: .[1], signal: (.[2] | tonumber), security: .[3],
+            known: ($known[.[1]] != null), connected: (.[1] == $current) })'
+}
+
+network_id() {
+  wpa list_networks | tail -n +2 | awk -F '\t' -v ssid="$1" '$2 == ssid { print $1; exit }'
+}
+
+# Wait for the association to finish: 0 when connected, 2 for a rejected
+# passphrase, 3 when it gave up.
+await_connection() {
+  local ssid=$1 state tries=0
+  while ((tries++ < 60)); do
+    state=$(wpa status)
+    if grep -qx 'wpa_state=COMPLETED' <<<"$state" && grep -qxF "ssid=$ssid" <<<"$state"; then
+      return 0
+    fi
+    sleep 0.5
+  done
+  return 3
+}
+
+connect() {
+  local ssid=$1 use_psk=$2 id psk security
+  iface=$(wlan_iface)
+  wpa_ready || { echo "Wi-Fi is off" >&2; exit 1; }
+  id=$(network_id "$ssid")
+  if [[ -z $id || $use_psk == true ]]; then
+    [[ -n $id ]] && wpa remove_network "$id" >/dev/null
+    id=$(wpa add_network | tail -n 1)
+    wpa set_network "$id" ssid "\"$ssid\"" >/dev/null || exit 1
+    if [[ $use_psk == true ]]; then
+      IFS= read -r psk
+      security=$(json_networks | jq -r --arg s "$ssid" '.[] | select(.ssid == $s) | .security')
+      if [[ $security == sae ]]; then
+        wpa set_network "$id" key_mgmt SAE >/dev/null
+        wpa set_network "$id" sae_password "\"$psk\"" >/dev/null || exit 1
+      else
+        wpa set_network "$id" psk "\"$psk\"" >/dev/null || { echo "The passphrase must be 8 to 63 characters" >&2; exit 2; }
+      fi
+    else
+      wpa set_network "$id" key_mgmt NONE >/dev/null
+    fi
+    wpa enable_network "$id" >/dev/null
+  fi
+  wpa select_network "$id" >/dev/null || exit 1
+  if await_connection "$ssid"; then
+    wpa save_config >/dev/null
+    return 0
+  fi
+  # A wrong passphrase leaves the network temporarily disabled by
+  # wpa_supplicant; drop a new one so a retry starts clean.
+  if [[ $use_psk == true ]]; then
+    wpa remove_network "$id" >/dev/null
+    wpa reconfigure >/dev/null
+    exit 2
+  fi
+  exit 3
+}
+
+# Root, through pkexec: create the wlan interface on the first radio, keep it
+# in rc.conf, and give wheel the control socket.
+setup() {
+  local radio iface=wlan0
+  radio=$(radios | head -n 1)
+  [[ -n $radio ]] || { echo "No Wi-Fi hardware found" >&2; exit 1; }
+  if ! grep -q '^ctrl_interface=' "$WPA_CONF" 2>/dev/null; then
+    { echo "ctrl_interface=DIR=$CTRL_DIR GROUP=wheel"; echo 'update_config=1'; cat "$WPA_CONF" 2>/dev/null; } >"$WPA_CONF.new"
+    mv "$WPA_CONF.new" "$WPA_CONF"
+    chmod 0600 "$WPA_CONF"
+  fi
+  sysrc -q "wlans_$radio=$iface" >/dev/null
+  sysrc -q "ifconfig_$iface=WPA DHCP" >/dev/null
+  service netif start "$iface" >/dev/null 2>&1
+  ifconfig "$iface" up
+}
+
+radio() {
+  iface=$(wlan_iface)
+  if [[ $1 == on ]]; then
+    if [[ -z $iface ]] || ! ifconfig "$iface" >/dev/null 2>&1 || ! grep -q '^ctrl_interface=.*GROUP=' "$WPA_CONF" 2>/dev/null; then
+      setup
+    else
+      ifconfig "$iface" up
+      pgrep -qf "wpa_supplicant.*-i *$iface" || service netif start "$iface" >/dev/null 2>&1
+    fi
+  else
+    [[ -n $iface ]] && ifconfig "$iface" down
+  fi
+}
+
+case ${1:-} in
+  status) json_status ;;
+  networks) json_networks ;;
+  scan)
+    iface=$(wlan_iface)
+    wpa_ready && wpa scan >/dev/null
+    ;;
+  connect)
+    [[ -n ${2:-} ]] || { echo "Usage: omarchy-wifi connect <ssid> [--psk]" >&2; exit 1; }
+    connect "$2" "$([[ ${3:-} == --psk ]] && echo true || echo false)"
+    ;;
+  disconnect)
+    iface=$(wlan_iface)
+    wpa_ready && wpa disconnect >/dev/null
+    ;;
+  forget)
+    [[ -n ${2:-} ]] || { echo "Usage: omarchy-wifi forget <ssid>" >&2; exit 1; }
+    iface=$(wlan_iface)
+    wpa_ready || exit 1
+    id=$(network_id "$2")
+    [[ -n $id ]] && wpa remove_network "$id" >/dev/null && wpa save_config >/dev/null
+    ;;
+  on | off)
+    if ((EUID == 0)); then
+      radio "$1"
+    else
+      pkexec "$(command -v omarchy-wifi)" "$1"
+    fi
+    ;;
+  *)
+    echo "Usage: omarchy-wifi status | networks | scan | connect <ssid> [--psk] | disconnect | forget <ssid> | on | off" >&2
+    exit 1
+    ;;
+esac

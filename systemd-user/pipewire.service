@@ -1,0 +1,11 @@
+[Unit]
+Description=PipeWire Multimedia Service
+
+[Service]
+Type=simple
+ExecStart=%%PREFIX%%/bin/pipewire
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=graphical-session.target

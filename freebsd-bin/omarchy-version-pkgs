@@ -1,0 +1,8 @@
+#!/bin/bash
+
+# omarchy:summary=Print when system packages were last upgraded
+
+# The most recent package install or upgrade time recorded by pkg(8).
+latest=$(pkg query '%t' 2>/dev/null | sort -n | tail -n 1)
+[[ -n $latest ]] || exit 1
+/bin/date -r "$latest" "+%A, %B %d %Y at %H:%M"

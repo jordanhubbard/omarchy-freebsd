@@ -1,0 +1,21 @@
+#!%%LOCALBASE%%/bin/bash
+
+# systemd-inhibit compatibility for Omarchy on FreeBSD. There is no logind to
+# hold an inhibitor lock, so the command simply runs. Sleep is only entered on
+# request (or by the lid switch sysctl), and Omarchy's own suspend path locks
+# the screen before calling acpiconf(8).
+
+while (($#)); do
+  case "$1" in
+    --what=* | --who=* | --why=* | --mode=*) ;;
+    --what | --who | --why | --mode) shift ;;
+    --list) exit 0 ;;
+    --) shift; break ;;
+    -*) ;;
+    *) break ;;
+  esac
+  shift
+done
+
+(($#)) || exit 0
+exec "$@"

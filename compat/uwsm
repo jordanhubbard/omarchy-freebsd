@@ -1,0 +1,235 @@
+#!%%LOCALBASE%%/bin/bash
+
+# uwsm compatibility for Omarchy on FreeBSD.
+#
+# uwsm binds a Wayland compositor to systemd's graphical-session.target. On
+# FreeBSD the session is a plain process tree: this shim prepares the
+# environment the way uwsm does (env and env.d files, XDG session variables),
+# puts the compositor on a D-Bus session bus, runs it, and stops the user units
+# started by the systemctl shim when the compositor exits.
+
+set -o pipefail
+
+OMARCHY_COMPAT="%%PREFIX%%/libexec/omarchy/compat"
+OMARCHY_GNUBIN="%%PREFIX%%/libexec/omarchy/gnubin"
+
+usage() {
+  cat <<USAGE
+Usage: uwsm start [-g N] [-e] [-D desktop[:desktop...]] [-N name] [-C comment] [--] compositor[.desktop] [args...]
+       uwsm stop
+       uwsm check may-start
+       uwsm app [--] command [args...]
+       uwsm finalize [VAR...]
+USAGE
+}
+
+runtime_dir() {
+  if [[ -z ${XDG_RUNTIME_DIR:-} || ! -d $XDG_RUNTIME_DIR ]]; then
+    # pam_xdg(8) provides this on FreeBSD 14+; fall back to a private dir.
+    XDG_RUNTIME_DIR="/tmp/omarchy-runtime-$(id -u)"
+    mkdir -p "$XDG_RUNTIME_DIR"
+    chmod 700 "$XDG_RUNTIME_DIR"
+  fi
+  export XDG_RUNTIME_DIR
+}
+
+source_env_files() {
+  local desktop=${1,,} file dir
+  local config_home=${XDG_CONFIG_HOME:-$HOME/.config}
+  local dirs=("%%PREFIX%%/share/uwsm" "$config_home/uwsm")
+
+  set -a
+  for dir in "${dirs[@]}"; do
+    for file in "$dir/env" "$dir/env.d"/* "$dir/env-$desktop" "$dir/env-$desktop.d"/*; do
+      # shellcheck disable=SC1090
+      [[ -f $file && -r $file ]] && . "$file"
+    done
+  done
+  set +a
+}
+
+prepend_path() {
+  local dir
+  for dir in "$@"; do
+    case ":$PATH:" in
+      *":$dir:"*) ;;
+      *) PATH="$dir:$PATH" ;;
+    esac
+  done
+  export PATH
+}
+
+desktop_exec() {
+  local id=${1%.desktop}.desktop dir file line
+  for dir in "${XDG_DATA_HOME:-$HOME/.local/share}" ${XDG_DATA_DIRS//:/ } %%PREFIX%%/share /usr/share; do
+    file="$dir/wayland-sessions/$id"
+    [[ -r $file ]] || continue
+    line=$(awk -F= '/^\[/{ main = ($0 == "[Desktop Entry]") } main && $1 == "Exec" { sub(/^Exec=/, ""); print; exit }' "$file")
+    [[ -n $line ]] && { printf '%s\n' "$line"; return 0; }
+  done
+  return 1
+}
+
+compositor_pidfile() {
+  printf '%s/omarchy-uwsm.pid\n' "$XDG_RUNTIME_DIR"
+}
+
+cmd_start() {
+  local desktop_names="" session_name="" compositor exec_line
+  local -a command
+
+  while (($#)); do
+    case "$1" in
+      -g) shift ;;
+      -e | -o | -U | -F) ;;
+      -D) desktop_names=$2; shift ;;
+      -N) session_name=$2; shift ;;
+      -C) shift ;;
+      -a | -t | -s | -S) shift ;;
+      --) shift; break ;;
+      -*) echo "uwsm start: ignoring unsupported option $1" >&2 ;;
+      *) break ;;
+    esac
+    shift
+  done
+
+  compositor=${1:-}
+  [[ -n $compositor ]] || { usage >&2; exit 1; }
+  shift
+
+  if [[ $compositor == *.desktop || ! $(type -P "$compositor") ]]; then
+    exec_line=$(desktop_exec "$compositor") || {
+      echo "uwsm start: cannot find $compositor" >&2
+      exit 1
+    }
+    read -ra command <<<"$exec_line"
+  else
+    command=("$compositor")
+  fi
+  command+=("$@")
+
+  [[ -n $desktop_names ]] || desktop_names=$(basename "${command[0]}")
+  [[ -n $session_name ]] || session_name=${desktop_names%%:*}
+
+  runtime_dir
+  export XDG_SESSION_TYPE=wayland
+  export XDG_CURRENT_DESKTOP=$desktop_names
+  export XDG_SESSION_DESKTOP=$session_name
+  export DESKTOP_SESSION=$session_name
+  export XDG_SESSION_CLASS=user
+  export XDG_MENU_PREFIX=${XDG_MENU_PREFIX:-}
+  unset DISPLAY WAYLAND_DISPLAY HYPRLAND_INSTANCE_SIGNATURE
+
+  source_env_files "${desktop_names%%:*}"
+
+  # The compat shims (uwsm-app, systemctl, ...) must be found by the compositor
+  # and everything Omarchy runs from it; GNU userland is what Omarchy's scripts
+  # and Quickshell snippets are written against. uwsm-app drops both again for
+  # the applications it launches.
+  prepend_path "$OMARCHY_GNUBIN" "$OMARCHY_COMPAT"
+
+  # polkit authorizes against ConsoleKit2 sessions on FreeBSD (there is no
+  # logind), so run inside one unless the login manager already made it.
+  if [[ -z ${XDG_SESSION_COOKIE:-} && -z ${OMARCHY_UWSM_CK:-} ]] && command -v ck-launch-session >/dev/null; then
+    export OMARCHY_UWSM_CK=1
+    exec ck-launch-session -- "$0" start -D "$desktop_names" -N "$session_name" -- "${command[@]}"
+  fi
+
+  if [[ -z ${DBUS_SESSION_BUS_ADDRESS:-} ]]; then
+    exec dbus-run-session -- "$0" start -D "$desktop_names" -N "$session_name" -- "${command[@]}"
+  fi
+
+  # A fresh session: forget units recorded by a previous one.
+  rm -rf "$XDG_RUNTIME_DIR/omarchy-units"
+
+  # The first Omarchy session copies Omarchy's defaults into the home
+  # directory, as /etc/skel would on Arch.
+  "%%PREFIX%%/libexec/omarchy/seed-user" || echo "uwsm: seeding Omarchy defaults failed" >&2
+
+  # In repo mode ("omarchy dev link"), keep the FreeBSD tree in step with the
+  # checkout for as long as the session runs.
+  local dev_watcher=""
+  if [[ -n ${OMARCHY_DEV_CHECKOUT:-} ]]; then
+    "%%PREFIX%%/bin/omarchy-dev-sync" --watch >/dev/null 2>&1 &
+    dev_watcher=$!
+  fi
+
+  # On Arch, PipeWire is socket-activated and so already there when anything
+  # in the session asks for it. Start it ahead of the compositor here: the
+  # shell connects to PipeWire once, when it starts.
+  systemctl --user start pipewire.service pipewire-pulse.service || echo "uwsm: starting PipeWire failed" >&2
+
+  # Everything the session starts is reaped with it, as systemd stops the
+  # session scope: session-reaper signals any process left once the
+  # compositor exits.
+  "%%PREFIX%%/libexec/omarchy/session-reaper" "${command[@]}" &
+  local compositor_pid=$!
+  echo "$compositor_pid" >"$(compositor_pidfile)"
+
+  trap 'kill -TERM "$compositor_pid" 2>/dev/null' HUP INT TERM
+  local status
+  while true; do
+    wait "$compositor_pid"
+    status=$?
+    kill -0 "$compositor_pid" 2>/dev/null || break
+  done
+  trap - HUP INT TERM
+
+  systemctl --user stop-all
+  [[ -n $dev_watcher ]] && kill "$dev_watcher" 2>/dev/null
+  rm -f "$(compositor_pidfile)"
+  exit "$status"
+}
+
+cmd_stop() {
+  runtime_dir
+  local pid
+  if [[ -r $(compositor_pidfile) ]]; then
+    read -r pid <"$(compositor_pidfile)"
+    [[ -n $pid ]] && kill -TERM "$pid" 2>/dev/null && exit 0
+  fi
+  if [[ -n ${HYPRLAND_INSTANCE_SIGNATURE:-} ]]; then
+    hyprctl dispatch exit >/dev/null 2>&1 && exit 0
+  fi
+  echo "uwsm stop: no running session found" >&2
+  exit 1
+}
+
+cmd_check() {
+  case "${1:-}" in
+    may-start)
+      # Start only from a console login that is not already inside a session.
+      [[ -z ${WAYLAND_DISPLAY:-} && -z ${DISPLAY:-} ]] || exit 1
+      runtime_dir
+      [[ ! -r $(compositor_pidfile) ]] && exit 0
+      read -r pid <"$(compositor_pidfile)"
+      kill -0 "$pid" 2>/dev/null && exit 1
+      exit 0
+      ;;
+    is-active)
+      runtime_dir
+      [[ -r $(compositor_pidfile) ]] && read -r pid <"$(compositor_pidfile)" && kill -0 "$pid" 2>/dev/null
+      exit
+      ;;
+    *)
+      exit 0
+      ;;
+  esac
+}
+
+case "${1:-}" in
+  start) shift; cmd_start "$@" ;;
+  stop) shift; cmd_stop "$@" ;;
+  check) shift; cmd_check "$@" ;;
+  app) shift; exec "$OMARCHY_COMPAT/uwsm-app" "$@" ;;
+  finalize)
+    shift
+    if (($#)); then
+      exec systemctl --user import-environment WAYLAND_DISPLAY DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE "$@"
+    fi
+    exec systemctl --user import-environment
+    ;;
+  select | aux) exit 0 ;;
+  -h | --help | help) usage ;;
+  *) usage >&2; exit 1 ;;
+esac

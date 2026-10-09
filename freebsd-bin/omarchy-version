@@ -1,0 +1,20 @@
+#!/bin/bash
+
+# omarchy:summary=Print the installed Omarchy version
+
+omarchy_path=${OMARCHY_PATH:-%%DATADIR%%}
+omarchy_path=${omarchy_path%/}
+
+if [[ $omarchy_path != "%%DATADIR%%" ]]; then
+  hash=$(git -C "$omarchy_path" rev-parse --short HEAD 2>/dev/null || true)
+  if [[ -n $hash ]]; then
+    echo "dev ($hash)"
+  else
+    echo "dev"
+  fi
+  exit 0
+fi
+
+version=$(pkg query '%v' omarchy 2>/dev/null)
+[[ -n $version ]] || exit 1
+echo "$version"

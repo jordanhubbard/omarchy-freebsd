@@ -1,0 +1,13 @@
+#!/bin/bash
+
+# omarchy:summary=Print the active Omarchy mirror and package channel
+
+# FreeBSD packages come from the pkg(8) repository; report which branch.
+url=$(pkg -vv 2>/dev/null | awk -F'"' '/^[[:space:]]*url[[:space:]]*:/ { print $2; exit }')
+case "$url" in
+  */latest) echo latest ;;
+  */quarterly) echo quarterly ;;
+  */base_*) echo base ;;
+  "") echo unknown ;;
+  *) echo "${url##*/}" ;;
+esac

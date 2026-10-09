@@ -1,0 +1,31 @@
+#!%%LOCALBASE%%/bin/bash
+
+# systemd-cat compatibility for Omarchy on FreeBSD: send a command's output to
+# syslog(3) under the given identifier. The command replaces this process, as
+# with systemd-cat, so callers can still signal and wait on it directly.
+
+tag=""
+priority=info
+while (($#)); do
+  case "$1" in
+    -t | --identifier) tag=$2; shift ;;
+    --identifier=*) tag=${1#*=} ;;
+    -p | --priority) priority=$2; shift ;;
+    --priority=*) priority=${1#*=} ;;
+    --stderr-priority=* | --level-prefix=* | --namespace=*) ;;
+    --stderr-priority | --level-prefix | --namespace) shift ;;
+    --) shift; break ;;
+    -*) ;;
+    *) break ;;
+  esac
+  shift
+done
+
+[[ $priority =~ ^[0-7]$ ]] && priority=$(echo emerg alert crit err warning notice info debug | cut -d' ' -f$((priority + 1)))
+[[ -n $tag ]] || tag=${1:-systemd-cat}
+
+if (($# == 0)); then
+  exec logger -t "$tag" -p "user.$priority"
+fi
+
+exec "$@" > >(exec logger -t "$tag" -p "user.$priority") 2>&1

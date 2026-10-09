@@ -1,0 +1,127 @@
+#!%%LOCALBASE%%/bin/bash
+
+# Turn an Omarchy source tree into the FreeBSD tree this port installs.
+#
+#   freebsdize --in-place <tree>
+#       The rewrites the port's build applies after patching: Arch paths to
+#       FreeBSD ones, and the compat tools and GNU userland on the PATH of
+#       every Omarchy command.
+#
+#   freebsdize <checkout> <dest>
+#       Everything the port's build does to a checkout, for "omarchy dev
+#       link": copy it to <dest>, apply the port's patches, add the FreeBSD
+#       versions of commands, fix interpreter paths, then the rewrites above.
+#
+# The values below are filled in when the port is built.
+
+set -euo pipefail
+
+DATADIR="%%DATADIR%%"
+PREFIX="%%PREFIX%%"
+LOCALBASE="%%LOCALBASE%%"
+PREFIX_SHARE="%%PREFIX_SHARE%%"
+GNU_COREUTILS="%%GNU_COREUTILS%%"
+PYTHON_CMD="%%PYTHON_CMD%%"
+PERL="%%PERL%%"
+DATA_DIRS=(applications config default install migrations shell themes)
+
+# What the installed port carries for dev mode.
+PATCHES_DIR=$DATADIR/freebsd/patches
+OVERRIDES_DIR=$DATADIR/freebsd/bin
+
+# Placeholders the sources use for install paths. Spelled in pieces so the
+# port's own substitution of this file leaves them alone.
+P='%%'
+
+rewrite() {
+  local tree=$1 d dirs=()
+  for d in bin "${DATA_DIRS[@]}" etc; do
+    [[ -d $tree/$d ]] && dirs+=("$tree/$d")
+  done
+  local files
+  files=$(find "${dirs[@]}" -type f \( -path "$tree/themes/*" -prune -o -print0 \) |
+    xargs -0 grep -lIE "/usr/(share|bin|lib)/|/etc/sudoers|${P}(DATADIR|PREFIX|LOCALBASE)${P}|chromium\.desktop" || true)
+  [[ -n $files ]] && printf '%s\n' "$files" | tr '\n' '\0' |
+    xargs -0 sed -i '' -E \
+      -e "s|/usr/share/omarchy|$DATADIR|g" \
+      -e "s#/usr/share/($PREFIX_SHARE)([/\" ]|\$)#$PREFIX/share/\1\2#g" \
+      -e "s|/usr/bin/omarchy-|$PREFIX/bin/omarchy-|g" \
+      -e "s#/usr/bin/(systemctl|systemd-run|timedatectl|powerprofilesctl)#$PREFIX/libexec/omarchy/compat/\1#g" \
+      -e "s#/usr/bin/($GNU_COREUTILS|grep|find)([^A-Za-z0-9_.-]|\$)#$PREFIX/libexec/omarchy/gnubin/\1\2#g" \
+      -e "s#/usr/bin/(bt-agent|fcitx5|fprintd-list|gtk-update-icon-cache|herdr|hyprctl|pipewire|tailscale|updatedb)#$LOCALBASE/bin/\1#g" \
+      -e "s|/usr/lib/systemd/user|$DATADIR/default/systemd/user|g" \
+      -e "s|chromium\.desktop|chromium-browser.desktop|g" \
+      -e "s#(^|[^l])/etc/sudoers#\1$PREFIX/etc/sudoers#g" \
+      -e "s|${P}DATADIR${P}|$DATADIR|g; s|${P}PREFIX${P}|$PREFIX|g; s|${P}LOCALBASE${P}|$LOCALBASE|g"
+
+  # The compat tools and GNU userland on the PATH of every Omarchy command,
+  # after the metadata header that the omarchy router reads.
+  local f line
+  line="case \":\$PATH:\" in *\":$PREFIX/libexec/omarchy/gnubin:\"*) ;; *) PATH=\"$PREFIX/libexec/omarchy/compat:$PREFIX/libexec/omarchy/gnubin:\$PATH\" ;; esac"
+  for f in "$tree"/bin/*; do
+    head -n 1 "$f" | grep -q '^#!.*bash' || continue
+    awk -v line="$line" \
+      'NR == 1 { print; next } !done && !/^[[:space:]]*(#|$)/ { print line; print ""; done = 1 } { print } END { if (!done) print line }' \
+      "$f" >"$f.new" && mv "$f.new" "$f"
+    chmod +x "$f"
+  done
+}
+
+# What USES=shebangfix does to the port's SHEBANG_FILES.
+fix_shebangs() {
+  local tree=$1 f
+  shopt -s nullglob
+  for f in "$tree"/bin/* "$tree"/config/omarchy/hooks/*/* "$tree"/default/systemd/system-sleep/* \
+    "$tree"/install/user/first-run/* "$tree"/shell/plugins/*/*.sh "$tree"/shell/services/*.sh; do
+    [[ -f $f ]] || continue
+    sed -i '' -E \
+      -e "1s@^#![[:space:]]*(/usr/bin/env[[:space:]]+bash|/bin/bash|/usr/bin/bash)([[:space:]]|\$)@#!$LOCALBASE/bin/bash\2@" \
+      -e "1s@^#![[:space:]]*(/usr/bin/env[[:space:]]+python3?|/usr/bin/python3?)([[:space:]]|\$)@#!$PYTHON_CMD\2@" \
+      -e "1s@^#![[:space:]]*(/usr/bin/env[[:space:]]+perl|/usr/bin/perl)([[:space:]]|\$)@#!$PERL\2@" \
+      "$f"
+  done
+  shopt -u nullglob
+}
+
+from_checkout() {
+  local checkout dest patch failed=0
+  checkout=$(realpath "$1")
+  dest=$2
+  [[ -d $checkout/bin && -d $checkout/default ]] || { echo "$checkout does not look like an Omarchy checkout." >&2; exit 1; }
+
+  rm -rf "$dest.new"
+  mkdir -p "$dest.new"
+  tar -C "$checkout" --exclude .git -cf - . | tar -C "$dest.new" -xpf -
+
+  for patch in "$PATCHES_DIR"/patch-*; do
+    [[ -e $patch ]] || continue
+    if ! patch -s -N -p0 -d "$dest.new" -i "$patch" >/dev/null 2>&1; then
+      echo "warning: ${patch##*/} does not apply to this checkout" >&2
+      failed=1
+    fi
+  done
+  find "$dest.new" \( -name '*.orig' -o -name '*.rej' \) -delete
+
+  cp "$OVERRIDES_DIR"/* "$dest.new/bin/"
+  fix_shebangs "$dest.new"
+  rewrite "$dest.new"
+
+  # A running session reads from <dest>, so update it in place: copy the new
+  # tree over it and remove what the checkout no longer has.
+  if [[ -d $dest ]]; then
+    (cd "$dest.new" && find . -type f -o -type l | sort) >"$dest.new.files"
+    (cd "$dest" && find . -type f -o -type l | sort) | comm -13 "$dest.new.files" - |
+      while IFS= read -r gone; do rm -f "$dest/$gone"; done
+    tar -C "$dest.new" -cf - . | tar -C "$dest" -xpf -
+    rm -rf "${dest:?}.new" "$dest.new.files"
+  else
+    mv "$dest.new" "$dest"
+  fi
+  return $failed
+}
+
+case ${1:-} in
+  --in-place) rewrite "${2:?usage: freebsdize --in-place <tree>}" ;;
+  -h | --help | "") sed -n '3,12p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  *) from_checkout "${1:?}" "${2:?usage: freebsdize <checkout> <dest>}" ;;
+esac

@@ -1,0 +1,39 @@
+#!/bin/bash
+
+# omarchy:summary=Prompt for required reboot or service restarts after updates
+
+echo
+
+confirm_reboot() {
+  gum confirm "$1" && { omarchy-system-reboot; exit 0; }
+}
+
+# freebsd-version -k reports the installed kernel, -r the running one.
+if [[ $(freebsd-version -k) != "$(freebsd-version -r)" ]]; then
+  confirm_reboot "The FreeBSD kernel has been updated. Reboot?"
+elif [[ -f $HOME/.local/state/omarchy/reboot-required ]]; then
+  confirm_reboot "Updates require reboot. Ready?"
+fi
+
+# A Hyprland binary newer than the running compositor means it was upgraded.
+if hyprland_pid=$(pgrep -x Hyprland | head -n 1) && [[ -n $hyprland_pid ]]; then
+  started=$(/bin/date -j -f '%a %b %d %T %Y' "$(LC_ALL=C ps -o lstart= -p "$hyprland_pid")" +%s 2>/dev/null || echo 0)
+  binary=$(command -v Hyprland)
+  if [[ -n $binary ]] && (( $(/usr/bin/stat -f %m "$binary") > started && started > 0 )); then
+    confirm_reboot "Hyprland has been updated. Reboot?"
+  fi
+fi
+
+for file in "$HOME"/.local/state/omarchy/restart-*-required; do
+  if [[ -f $file ]]; then
+    filename=$(basename "$file")
+    service=$(echo "$filename" | sed 's/restart-\(.*\)-required/\1/')
+    echo "Restarting $service"
+    omarchy-state clear "$filename"
+    omarchy-restart-"$service"
+  fi
+done
+
+echo -e "\e[32m\nRestarting shell\e[0m"
+echo "All plugins have been reloaded"
+omarchy-restart-shell || true

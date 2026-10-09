@@ -1,0 +1,12 @@
+#!/bin/bash
+
+# omarchy:summary=Returns true if all of the named packages are installed on the system (or false if any of them are missing).
+# omarchy:args=<packages...>
+
+source "$OMARCHY_PATH/freebsd/pkg.sh"
+
+for pkg in "$@"; do
+  pkg_installed "$pkg" || exit 1
+done
+
+exit 0

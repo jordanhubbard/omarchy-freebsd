@@ -1,0 +1,28 @@
+#!%%LOCALBASE%%/bin/bash
+
+# Make FreeBSD's default sound device (hw.snd.default_unit, which snd_hda
+# points at the built-in speakers) PipeWire's default too. WirePlumber's OSS
+# monitor gives every device the same priority, so it would otherwise take the
+# first one, often an HDMI output. A default the user has picked is kept.
+
+state=${XDG_STATE_HOME:-$HOME/.local/state}/wireplumber/default-nodes
+if [[ -r $state ]] && grep -q '^default\.configured\.audio\.sink=' "$state"; then
+  exit 0
+fi
+
+unit=$(sysctl -n hw.snd.default_unit 2>/dev/null) || exit 0
+
+# pipewire-pulse starts alongside this; give it a moment.
+for _ in {1..50}; do
+  pactl info >/dev/null 2>&1 && break
+  sleep 0.2
+done
+
+sinks=$(pactl list short sinks 2>/dev/null | cut -f2)
+sources=$(pactl list short sources 2>/dev/null | cut -f2)
+if grep -qx "pcm$unit.play" <<<"$sinks"; then
+  pactl set-default-sink "pcm$unit.play"
+fi
+if grep -qx "pcm$unit.rec" <<<"$sources"; then
+  pactl set-default-source "pcm$unit.rec"
+fi

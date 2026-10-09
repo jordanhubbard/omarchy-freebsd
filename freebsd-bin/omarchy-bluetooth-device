@@ -1,0 +1,17 @@
+#!/bin/bash
+
+# omarchy:summary=Control a Bluetooth device
+# omarchy:group=bluetooth
+# omarchy:args=[pair|connect|disconnect|forget] <address>
+# omarchy:examples=omarchy bluetooth device connect 00:11:22:33:44:55
+
+# FreeBSD version: Bluetooth runs on FreeBSD's own stack, through
+# omarchy-bluetooth, rather than BlueZ's bluetoothctl.
+
+case ${1:-} in
+  pair | connect | disconnect | forget) exec omarchy-bluetooth "$@" ;;
+  *)
+    echo "Usage: omarchy-bluetooth-device [pair|connect|disconnect|forget] <address>" >&2
+    exit 1
+    ;;
+esac

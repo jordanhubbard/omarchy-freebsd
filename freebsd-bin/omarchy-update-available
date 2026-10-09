@@ -1,0 +1,37 @@
+#!/bin/bash
+
+# omarchy:summary=Check whether Omarchy updates are available.
+
+set -euo pipefail
+
+updates=()
+
+if [[ $OMARCHY_PATH != "%%DATADIR%%" ]]; then
+  upstream=$(git -C "$OMARCHY_PATH" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null || true)
+
+  if [[ -n $upstream ]]; then
+    GIT_TERMINAL_PROMPT=0 timeout 10 git -C "$OMARCHY_PATH" fetch --quiet 2>/dev/null || true
+    behind=$(git -C "$OMARCHY_PATH" rev-list --count "HEAD..$upstream" 2>/dev/null || echo 0)
+    if (( behind > 0 )); then
+      commit_label=commits
+      (( behind == 1 )) && commit_label=commit
+      updates+=("omarchy-dev-checkout $behind new $commit_label on $upstream")
+    fi
+  fi
+fi
+
+# Compare against the last fetched catalog; refreshing it needs root and is
+# done by omarchy-update (and by periodic(8) when enabled).
+installed=$(pkg query '%v' omarchy 2>/dev/null || true)
+available=$(pkg rquery -U '%v' omarchy 2>/dev/null | head -n 1 || true)
+if [[ -n $installed && -n $available && $(pkg version -t "$installed" "$available") == "<" ]]; then
+  updates+=("omarchy $installed -> $available")
+fi
+
+if (( ${#updates[@]} > 0 )); then
+  printf '%s\n' "${updates[@]}"
+  exit 0
+else
+  echo "Omarchy is up to date"
+  exit 1
+fi

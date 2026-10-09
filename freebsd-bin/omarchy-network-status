@@ -1,0 +1,151 @@
+#!/bin/bash
+
+# omarchy:summary=Print active network status for the shell
+# omarchy:group=network
+# omarchy:args=[--verbose]
+
+verbose=false
+internet_probe=1.1.1.1
+
+case "${1:-}" in
+  "")
+    ;;
+  --verbose)
+    verbose=true
+    ;;
+  *)
+    echo "Usage: omarchy-network-status [--verbose]" >&2
+    exit 2
+    ;;
+esac
+
+route_field() {
+  route -n get "$internet_probe" 2>/dev/null | awk -v key="$1:" '$1 == key { print $2; exit }'
+}
+
+is_wireless() {
+  ifconfig "$1" 2>/dev/null | grep -q 'media: IEEE 802.11'
+}
+
+# "ssid NAME channel 36 (5180 MHz 11a ht/40+) bssid ..." from ifconfig(8).
+wifi_ssid() {
+  ifconfig "$1" 2>/dev/null | awk '/^[[:space:]]*ssid / { sub(/^[[:space:]]*ssid /, ""); sub(/ channel .*/, ""); print; exit }'
+}
+
+wifi_freq() {
+  ifconfig "$1" 2>/dev/null | awk '/^[[:space:]]*ssid / { if (match($0, /\([0-9]+ MHz/)) print substr($0, RSTART + 1, RLENGTH - 5); exit }'
+}
+
+# The associated station's RSSI, which net80211 reports in 0.5 dBm steps.
+wifi_signal_dbm() {
+  ifconfig "$1" list sta 2>/dev/null | awk 'NR == 2 { printf "%d\n", $5 / 2 - 95; exit }'
+}
+
+print_status() {
+  local device state ssid dbm signal
+  device=$(route_field interface)
+
+  if [[ -z $device ]]; then
+    printf 'disconnected\t\t\t\n'
+    return
+  fi
+
+  if ! is_wireless "$device"; then
+    printf 'ethernet\t%s\t\t\n' "$device"
+    return
+  fi
+
+  state=$(ifconfig "$device" 2>/dev/null | awk '/status:/ { print $2; exit }')
+  if [[ $state != associated ]]; then
+    printf 'disconnected\t\t\t\n'
+    return
+  fi
+
+  ssid=$(wifi_ssid "$device")
+  dbm=$(wifi_signal_dbm "$device")
+  if [[ -n $dbm ]]; then
+    signal=$(( (dbm + 100) * 2 ))
+    (( signal > 100 )) && signal=100
+    (( signal < 0 )) && signal=0
+  fi
+  printf 'wifi\t%s\t%s\t%s\n' "${ssid:-$device}" "${signal:-}" "$(wifi_freq "$device")"
+}
+
+ping_latency_ms() {
+  local host=$1
+  LC_ALL=C ping -n -c 1 -W 1000 "$host" 2>/dev/null | awk -F'time[=<]' '/time[=<]/ { split($2, parts, " "); print parts[1]; exit }'
+}
+
+print_ping_samples() {
+  local gateway=$1
+  local tmpdir router_file internet_file
+  local router_pid="" internet_pid=""
+
+  tmpdir=$(mktemp -d) || return
+  router_file="$tmpdir/router"
+  internet_file="$tmpdir/internet"
+
+  if [[ -n $gateway ]]; then
+    ping_latency_ms "$gateway" >"$router_file" &
+    router_pid=$!
+  fi
+
+  ping_latency_ms "$internet_probe" >"$internet_file" &
+  internet_pid=$!
+
+  if [[ -n $router_pid ]]; then
+    wait "$router_pid"
+    printf 'router_ping_ms\t%s\n' "$(cat "$router_file")"
+  fi
+
+  wait "$internet_pid"
+  printf 'internet_ping_ms\t%s\n' "$(cat "$internet_file")"
+
+  rm -rf "$tmpdir"
+}
+
+print_verbose() {
+  local iface gw src netmask prefix media
+  iface=$(route_field interface)
+  gw=$(route_field gateway)
+  [[ -z $iface ]] && return
+
+  read -r src netmask < <(ifconfig "$iface" inet 2>/dev/null | awk '$1 == "inet" { print $2, $4; exit }')
+  if [[ $netmask == 0x* ]]; then
+    prefix=0
+    mask=$((netmask))
+    while (( mask & 0x80000000 )); do
+      (( prefix++, mask = (mask << 1) & 0xffffffff ))
+    done
+  fi
+
+  printf 'iface\t%s\n' "$iface"
+  printf 'ip\t%s\n' "$src"
+  printf 'prefix\t%s\n' "${prefix:-}"
+  printf 'gateway\t%s\n' "$gw"
+
+  netstat -I "$iface" -b -n 2>/dev/null | awk 'NR == 2 { printf "rx_bytes\t%s\ntx_bytes\t%s\n", $8, $11 }'
+
+  if is_wireless "$iface"; then
+    printf 'type\twifi\n'
+    printf 'ssid\t%s\n' "$(wifi_ssid "$iface")"
+    printf 'signal_dbm\t%s\n' "$(wifi_signal_dbm "$iface")"
+    printf 'freq\t%s\n' "$(wifi_freq "$iface")"
+    media=$(ifconfig "$iface" 2>/dev/null | awk '/media:/ { sub(/.*media: /, ""); print; exit }')
+    printf 'bitrate\t%s\n' "$(sed -nE 's/.*mode ([^ )]+).*/\1/p' <<<"$media")"
+  else
+    printf 'type\tethernet\n'
+    media=$(ifconfig "$iface" 2>/dev/null | awk '/media:/ { print; exit }')
+    [[ $media =~ ([0-9]+)(G?)base ]] && printf 'speed\t%s\n' "$(( BASH_REMATCH[1] * (${#BASH_REMATCH[2]} ? 1000 : 1) ))"
+    [[ $media == *full-duplex* ]] && printf 'duplex\tfull\n'
+    [[ $media == *half-duplex* ]] && printf 'duplex\thalf\n'
+  fi
+
+  print_ping_samples "$gw"
+}
+
+if [[ $verbose == "true" ]]; then
+  print_verbose
+else
+  print_status
+fi

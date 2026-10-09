@@ -1,0 +1,83 @@
+#!%%LOCALBASE%%/bin/bash
+
+# brightnessctl compatibility for Omarchy on FreeBSD, backed by backlight(8).
+# FreeBSD exposes panels as /dev/backlight/<name> with a 0-100 percent scale,
+# so "max" is always 100 and raw values are percentages.
+
+device=""
+machine=0
+save=0
+restore=0
+verb=info
+value=""
+
+while (($#)); do
+  case "$1" in
+    -d | --device) device=$2; shift ;;
+    --device=*) device=${1#*=} ;;
+    -m | --machine-readable) machine=1 ;;
+    -s | --save) save=1 ;;
+    -r | --restore) restore=1 ;;
+    -q | --quiet | -p | --pretend | -l | --list | -n | --min-value) ;;
+    -c | --class) shift ;;
+    -[a-z][a-z]*)
+      # Combined short flags such as -sd DEV or -rd DEV.
+      flags=${1#-}
+      [[ $flags == *s* ]] && save=1
+      [[ $flags == *r* ]] && restore=1
+      [[ $flags == *m* ]] && machine=1
+      if [[ $flags == *d ]]; then device=$2; shift; fi
+      ;;
+    i | info | g | get | m | max) verb="$1" ;;
+    s | set) verb=set; value=$2; shift ;;
+    *) ;;
+  esac
+  shift
+done
+
+dir=/dev/backlight
+if [[ -z $device ]]; then
+  for candidate in "$dir"/*; do
+    [[ -e $candidate ]] && device=${candidate##*/} && break
+  done
+fi
+[[ -n $device && -e $dir/$device ]] || { echo "Device '${device:-backlight}' not found." >&2; exit 1; }
+path=$dir/$device
+state_file="${XDG_RUNTIME_DIR:-/tmp}/brightnessctl-$device"
+
+current() {
+  backlight -f "$path" -q
+}
+
+if ((save)); then
+  current >"$state_file"
+fi
+
+if ((restore)); then
+  [[ -r $state_file ]] && backlight -f "$path" "$(<"$state_file")"
+  exit
+fi
+
+case "$verb" in
+  g | get) current ;;
+  m | max) echo 100 ;;
+  set)
+    case "$value" in
+      *%+ | +*%) delta=${value//[+%]/}; backlight -f "$path" + "$delta" ;;
+      *%- | -*%) delta=${value//[-%]/}; backlight -f "$path" - "$delta" ;;
+      *+) backlight -f "$path" + "${value%+}" ;;
+      *-) backlight -f "$path" - "${value%-}" ;;
+      *%) backlight -f "$path" "${value%\%}" ;;
+      [0-9]*) backlight -f "$path" "$value" ;;
+      *) echo "Invalid value '$value'" >&2; exit 1 ;;
+    esac
+    ;;
+  *)
+    level=$(current) || exit 1
+    if ((machine)); then
+      printf '%s,backlight,%s,%s%%,100\n' "$device" "$level" "$level"
+    else
+      printf "Device '%s' of class 'backlight':\n\tCurrent brightness: %s (%s%%)\n\tMax brightness: 100\n" "$device" "$level" "$level"
+    fi
+    ;;
+esac

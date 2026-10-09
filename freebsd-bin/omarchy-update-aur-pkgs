@@ -1,0 +1,6 @@
+#!/bin/bash
+
+# omarchy:summary=Update AUR packages if any are installed
+
+# The AUR is Arch-specific; FreeBSD packages are all upgraded by pkg(8).
+exit 0

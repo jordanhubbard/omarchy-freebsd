@@ -1,0 +1,8 @@
+#!/bin/bash
+
+# omarchy:summary=Ensure the Omarchy and Arch keyring packages are installed and populated
+# omarchy:requires-sudo=true
+
+# pkg(8) verifies repositories against the fingerprints installed with it;
+# there is no separate keyring to refresh on FreeBSD.
+exit 0

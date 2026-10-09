@@ -1,0 +1,815 @@
+#!%%LOCALBASE%%/bin/bash
+
+# systemctl compatibility for Omarchy on FreeBSD.
+#
+# Omarchy drives its session services through systemd user units and a few
+# system units. FreeBSD has neither systemd nor logind, so this shim gives the
+# subset Omarchy uses real meaning:
+#
+#   --user   Unit files are read from ~/.config/systemd/user and the Omarchy
+#            unit directories. enable/disable manage the same *.wants symlinks
+#            systemd would, and start runs the unit's ExecStart under daemon(8)
+#            with a supervisor pidfile in $XDG_RUNTIME_DIR. Unit conditions,
+#            Environment=, EnvironmentFile=, oneshot units and Restart= are
+#            honoured. import-environment records the session environment and
+#            starts graphical-session.target the first time the compositor
+#            publishes WAYLAND_DISPLAY, which is where uwsm would do it.
+#   system   Units map onto rc.d scripts through sysrc(8) and service(8);
+#            power verbs map onto shutdown(8) and acpiconf(8).
+
+set -o pipefail
+
+OMARCHY_DATADIR="%%DATADIR%%"
+
+user_mode=0
+quiet=0
+now=0
+value_only=0
+no_legend=0
+output=""
+properties=()
+signal=TERM
+verb=""
+args=()
+
+while (($#)); do
+  case "$1" in
+    --user) user_mode=1 ;;
+    --system) user_mode=0 ;;
+    -q | --quiet) quiet=1 ;;
+    --now) now=1 ;;
+    --value) value_only=1 ;;
+    -p | --property) properties+=("$2"); shift ;;
+    --property=*) properties+=("${1#*=}") ;;
+    -s | --signal) signal=${2#SIG}; shift ;;
+    --signal=*) signal=${1#*=}; signal=${signal#SIG} ;;
+    --no-legend) no_legend=1 ;;
+    --output=*) output=${1#*=} ;;
+    -o | --output) output=$2; shift ;;
+    --no-wall | --no-block | --no-pager | --plain | --full | -l | --all | -a | --force | -f | --no-ask-password | --wait | --runtime) ;;
+    --type=* | --state=* | --kill-whom=* | --lines=* | --job-mode=* | --kill-who=* | --timestamp=* | --what=* | --boot-loader-entry=* | --reboot-argument=*) ;;
+    -t | --type | --state | -n | --lines) shift ;;
+    --) shift; args+=("$@"); break ;;
+    -*) echo "systemctl: unsupported option '$1' ignored on FreeBSD" >&2 ;;
+    *)
+      if [[ -z $verb ]]; then
+        verb=$1
+      else
+        args+=("$1")
+      fi
+      ;;
+  esac
+  shift
+done
+
+say() {
+  ((quiet)) || printf '%s\n' "$*"
+}
+
+unit_name() {
+  local unit=$1
+  [[ $unit == *.* ]] || unit="$unit.service"
+  printf '%s\n' "$unit"
+}
+
+# ---------------------------------------------------------------- user units
+
+user_config_dir() {
+  printf '%s\n' "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+}
+
+user_unit_dirs() {
+  user_config_dir
+  printf '%s\n' "$OMARCHY_DATADIR/freebsd/systemd/user" "$OMARCHY_DATADIR/default/systemd/user" "%%PREFIX%%/lib/systemd/user"
+}
+
+runtime_dir() {
+  local dir="${XDG_RUNTIME_DIR:-/tmp/omarchy-runtime-$(id -u)}/omarchy-units"
+  mkdir -p "$dir" && chmod 700 "$dir"
+  printf '%s\n' "$dir"
+}
+
+find_unit() {
+  local unit=$1 dir
+  while IFS= read -r dir; do
+    if [[ -e $dir/$unit || -L $dir/$unit ]]; then
+      printf '%s\n' "$dir/$unit"
+      return 0
+    fi
+  done < <(user_unit_dirs)
+
+  # Template instances (foo@bar.service) read foo@.service.
+  if [[ $unit == *@*.* ]]; then
+    local template="${unit%%@*}@.${unit##*.}"
+    while IFS= read -r dir; do
+      if [[ -e $dir/$template ]]; then
+        printf '%s\n' "$dir/$template"
+        return 0
+      fi
+    done < <(user_unit_dirs)
+  fi
+
+  return 1
+}
+
+unit_masked() {
+  local file
+  file="$(user_config_dir)/$1"
+  [[ -L $file && $(readlink "$file") == /dev/null ]]
+}
+
+# Print every value of Section.Key from the unit and its drop-ins, in order. An
+# empty assignment resets the list, as in systemd.
+unit_values() {
+  local unit=$1 section=$2 key=$3 file dir files=()
+
+  file=$(find_unit "$unit") || return 1
+  files+=("$file")
+  while IFS= read -r dir; do
+    for file in "$dir/$unit.d"/*.conf; do
+      [[ -f $file ]] && files+=("$file")
+    done
+  done < <(user_unit_dirs)
+
+  awk -v section="[$section]" -v key="$key" '
+    function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
+    FNR == 1 { current = ""; continuing = 0 }
+    /^[ \t]*[#;]/ { next }
+    /^[ \t]*\[/ { current = trim($0); continuing = 0; next }
+    current != section { next }
+    continuing {
+      line = trim($0)
+      continuing = sub(/\\$/, "", line)
+      values[n] = values[n] " " line
+      next
+    }
+    {
+      eq = index($0, "=")
+      if (eq == 0) next
+      if (trim(substr($0, 1, eq - 1)) != key) next
+      value = trim(substr($0, eq + 1))
+      continuing = sub(/\\$/, "", value)
+      if (value == "") { n = 0; next }
+      values[++n] = value
+    }
+    END { for (i = 1; i <= n; i++) print values[i] }
+  ' "${files[@]}"
+}
+
+unit_value() {
+  unit_values "$@" | tail -n 1
+}
+
+expand_specifiers() {
+  local text=$1 unit=$2 instance=""
+  [[ $unit == *@*.* ]] && instance=${unit#*@} && instance=${instance%.*}
+  text=${text//%%/$'\001'}
+  text=${text//%h/$HOME}
+  text=${text//%t/${XDG_RUNTIME_DIR:-/tmp}}
+  text=${text//%U/$(id -u)}
+  text=${text//%u/$(id -un)}
+  text=${text//%n/$unit}
+  text=${text//%N/${unit%.*}}
+  text=${text//%p/${unit%%@*}}
+  text=${text//%i/$instance}
+  text=${text//%I/$instance}
+  text=${text//%E/${XDG_CONFIG_HOME:-$HOME/.config}}
+  text=${text//%S/${XDG_STATE_HOME:-$HOME/.local/state}}
+  text=${text//%C/${XDG_CACHE_HOME:-$HOME/.cache}}
+  text=${text//$'\001'/%}
+  printf '%s\n' "$text"
+}
+
+load_session_environment() {
+  local env_file
+  env_file="$(runtime_dir)/environment"
+  if [[ -r $env_file ]]; then
+    set -a
+    # shellcheck disable=SC1090
+    . "$env_file"
+    set +a
+  fi
+}
+
+# Apply Environment= and EnvironmentFile= in the current (sub)shell.
+apply_unit_environment() {
+  local unit=$1 line file optional assignment
+  while IFS= read -r line; do
+    line=$(expand_specifiers "$line" "$unit")
+    eval "set -- $line"
+    for assignment in "$@"; do
+      [[ $assignment == *=* ]] && export "${assignment%%=*}=${assignment#*=}"
+    done
+  done < <(unit_values "$unit" Service Environment)
+
+  while IFS= read -r file; do
+    file=$(expand_specifiers "$file" "$unit")
+    optional=0
+    [[ $file == -* ]] && optional=1 && file=${file#-}
+    if [[ -r $file ]]; then
+      set -a
+      # shellcheck disable=SC1090
+      . "$file"
+      set +a
+    elif ((!optional)); then
+      echo "systemctl: $unit: EnvironmentFile $file is missing" >&2
+      return 1
+    fi
+  done < <(unit_values "$unit" Service EnvironmentFile)
+}
+
+check_conditions() {
+  local unit=$1 condition negate value
+
+  while IFS= read -r value; do
+    value=$(expand_specifiers "$value" "$unit")
+    negate=0
+    [[ $value == !* ]] && negate=1 && value=${value#!}
+    if [[ -e $value ]]; then ((negate)) && return 1; else ((negate)) || return 1; fi
+  done < <(unit_values "$unit" Unit ConditionPathExists)
+
+  while IFS= read -r value; do
+    value=$(expand_specifiers "$value" "$unit")
+    negate=0
+    [[ $value == !* ]] && negate=1 && value=${value#!}
+    if [[ -d $value ]]; then ((negate)) && return 1; else ((negate)) || return 1; fi
+  done < <(unit_values "$unit" Unit ConditionPathIsDirectory)
+
+  while IFS= read -r value; do
+    value=$(expand_specifiers "$value" "$unit")
+    negate=0
+    [[ $value == !* ]] && negate=1 && value=${value#!}
+    if [[ -x $value && -f $value ]]; then ((negate)) && return 1; else ((negate)) || return 1; fi
+  done < <(unit_values "$unit" Unit ConditionFileIsExecutable)
+
+  while IFS= read -r condition; do
+    negate=0
+    [[ $condition == !* ]] && negate=1 && condition=${condition#!}
+    if [[ $condition == *=* ]]; then
+      [[ ${!condition%%=*} == "${condition#*=}" ]] && value=1 || value=0
+    else
+      [[ -n ${!condition:-} ]] && value=1 || value=0
+    fi
+    ((value ^ negate)) || return 1
+  done < <(unit_values "$unit" Unit ConditionEnvironment)
+
+  return 0
+}
+
+# ExecStart= and friends carry optional prefixes (-@:+!) that change how
+# systemd runs them. The only one that matters here is "-", ignore failure.
+exec_line_command() {
+  local line=$1
+  while [[ $line == [-@:+!]* ]]; do
+    line=${line:1}
+  done
+  printf '%s\n' "$line"
+}
+
+run_exec_lines() {
+  local unit=$1 key=$2 line cmd ignore prefix
+  while IFS= read -r line; do
+    ignore=0
+    prefix=${line%%[!-@:+!]*}
+    [[ $prefix == *-* ]] && ignore=1
+    cmd=$(exec_line_command "$(expand_specifiers "$line" "$unit")")
+    if ! bash -c "$cmd"; then
+      ((ignore)) || return 1
+    fi
+  done < <(unit_values "$unit" Service "$key")
+}
+
+pidfile() {
+  printf '%s/%s.pid\n' "$(runtime_dir)" "$1"
+}
+
+unit_active() {
+  local unit=$1 pid file
+  file=$(pidfile "$unit")
+  [[ -f "$(runtime_dir)/$unit.active" ]] && return 0
+  [[ -r $file ]] || return 1
+  # daemon(8) writes its pidfile without a trailing newline.
+  pid=$(<"$file")
+  [[ -n $pid ]] && kill -0 "$pid" 2>/dev/null
+}
+
+unit_main_pid() {
+  local unit=$1 supervisor
+  unit_active "$unit" || { echo 0; return; }
+  supervisor=$(<"$(pidfile "$unit")") || { echo 0; return; }
+  pgrep -P "$supervisor" | head -n 1 || echo 0
+}
+
+start_user_unit() {
+  local unit file type restart restart_sec cmd
+  unit=$(unit_name "$1")
+
+  if [[ $unit == *.target ]]; then
+    start_user_target "$unit"
+    return
+  fi
+
+  unit_active "$unit" && return 0
+  if unit_masked "$unit"; then
+    echo "Failed to start $unit: Unit $unit is masked." >&2
+    return 1
+  fi
+  file=$(find_unit "$unit") || { echo "Failed to start $unit: Unit $unit not found." >&2; return 5; }
+
+  (
+    load_session_environment
+    check_conditions "$unit" || exit 0
+    apply_unit_environment "$unit" || exit 1
+
+    type=$(unit_value "$unit" Service Type)
+    restart=$(unit_value "$unit" Service Restart)
+    restart_sec=$(unit_value "$unit" Service RestartSec)
+    restart_sec=${restart_sec%s}
+    [[ $restart_sec =~ ^[0-9]+$ ]] || restart_sec=1
+    ((restart_sec > 0)) || restart_sec=1
+
+    cd "$HOME" || exit 1
+    run_exec_lines "$unit" ExecCondition || exit 0
+    run_exec_lines "$unit" ExecStartPre || exit 1
+
+    if [[ $type == oneshot ]]; then
+      run_exec_lines "$unit" ExecStart || exit 1
+      if [[ $(unit_value "$unit" Service RemainAfterExit) =~ ^(yes|true|1|on)$ ]]; then
+        touch "$(runtime_dir)/$unit.active"
+      fi
+      run_exec_lines "$unit" ExecStartPost
+      exit 0
+    fi
+
+    cmd=$(unit_value "$unit" Service ExecStart)
+    [[ -n $cmd ]] || { echo "systemctl: $unit has no ExecStart" >&2; exit 1; }
+    cmd=$(exec_line_command "$(expand_specifiers "$cmd" "$unit")")
+
+    daemon_args=(-f -S -l user -s notice -T "${unit%.*}" -P "$(pidfile "$unit")")
+    case "$restart" in
+      always | on-failure | on-abnormal | on-abort | on-watchdog) daemon_args+=(-R "$restart_sec") ;;
+    esac
+
+    daemon "${daemon_args[@]}" %%LOCALBASE%%/bin/bash -c "exec $cmd" || exit 1
+    run_exec_lines "$unit" ExecStartPost
+    exit 0
+  )
+}
+
+stop_user_unit() {
+  local unit pid file tries
+  unit=$(unit_name "$1")
+
+  if [[ $unit == *.target ]]; then
+    stop_user_target "$unit"
+    return
+  fi
+
+  rm -f "$(runtime_dir)/$unit.active"
+  file=$(pidfile "$unit")
+  [[ -r $file ]] || return 0
+  pid=$(<"$file")
+  if [[ -n $pid ]] && kill -0 "$pid" 2>/dev/null; then
+    kill -TERM "$pid" 2>/dev/null
+    for ((tries = 0; tries < 50; tries++)); do
+      kill -0 "$pid" 2>/dev/null || break
+      sleep 0.1
+    done
+    kill -0 "$pid" 2>/dev/null && kill -KILL "$pid" 2>/dev/null
+  fi
+  rm -f "$file"
+  if unit_values "$unit" Service ExecStopPost >/dev/null 2>&1; then
+    (load_session_environment; apply_unit_environment "$unit" && run_exec_lines "$unit" ExecStopPost)
+  fi
+  return 0
+}
+
+# Units wanted by a target: enabled units from the user's *.wants directory,
+# plus vendor-enabled links shipped in the Omarchy unit directories.
+target_units() {
+  local target=$1 dir link
+  while IFS= read -r dir; do
+    for link in "$dir/$target.wants"/*; do
+      [[ -e $link || -L $link ]] || continue
+      basename "$link"
+    done
+  done < <(user_unit_dirs) | awk '!seen[$0]++'
+}
+
+# Units start one after another here, where systemd starts them in parallel,
+# so a unit ordered After= the target itself (a oneshot that waits for the
+# shell, say) is held back until the rest of the target is up.
+start_user_target() {
+  local target=$1 unit after
+  local -a later=()
+  case "$target" in
+    graphical-session.target) start_user_target graphical-session-pre.target ;;
+  esac
+  while IFS= read -r unit; do
+    unit_masked "$unit" && continue
+    after=" $(unit_values "$unit" Unit After | tr '\n' ' ') "
+    if [[ $after == *" $target "* ]]; then
+      later+=("$unit")
+      continue
+    fi
+    start_user_unit "$unit" || echo "systemctl: failed to start $unit" >&2
+  done < <(target_units "$target")
+  touch "$(runtime_dir)/$target.active"
+  for unit in "${later[@]}"; do
+    start_user_unit "$unit" || echo "systemctl: failed to start $unit" >&2
+  done
+}
+
+stop_user_target() {
+  local target=$1 unit
+  while IFS= read -r unit; do
+    stop_user_unit "$unit"
+  done < <(target_units "$target")
+  rm -f "$(runtime_dir)/$target.active"
+}
+
+stop_all_user_units() {
+  local file unit
+  for file in "$(runtime_dir)"/*.pid "$(runtime_dir)"/*.active; do
+    [[ -e $file ]] || continue
+    unit=$(basename "$file")
+    unit=${unit%.pid}
+    unit=${unit%.active}
+    [[ $unit == *.target ]] && { rm -f "$file"; continue; }
+    stop_user_unit "$unit"
+  done
+}
+
+enable_user_unit() {
+  local unit file target config link created=0
+  unit=$(unit_name "$1")
+  file=$(find_unit "$unit") || { echo "Failed to enable unit: Unit file $unit does not exist." >&2; return 1; }
+  config=$(user_config_dir)
+
+  while IFS= read -r target; do
+    for target in $target; do
+      mkdir -p "$config/$target.wants"
+      link="$config/$target.wants/$unit"
+      if [[ ! -L $link || $(readlink "$link") != "$file" ]]; then
+        ln -sfn "$file" "$link"
+        say "Created symlink $link → $file."
+      fi
+      created=1
+    done
+  done < <(unit_values "$unit" Install WantedBy; unit_values "$unit" Install RequiredBy)
+
+  if ((!created)); then
+    say "The unit files have no installation config (WantedBy=, RequiredBy=)."
+  fi
+  ((now)) && start_user_unit "$unit"
+  return 0
+}
+
+disable_user_unit() {
+  local unit link
+  unit=$(unit_name "$1")
+  for link in "$(user_config_dir)"/*.wants/"$unit"; do
+    [[ -L $link ]] || continue
+    rm -f "$link"
+    say "Removed \"$link\"."
+  done
+  ((now)) && stop_user_unit "$unit"
+  return 0
+}
+
+user_unit_enabled() {
+  local unit=$1 link
+  unit_masked "$unit" && { echo masked; return 1; }
+  for link in "$(user_config_dir)"/*.wants/"$unit"; do
+    [[ -L $link ]] && { echo enabled; return 0; }
+  done
+  find_unit "$unit" >/dev/null || { echo not-found; return 1; }
+  if [[ -z $(unit_values "$unit" Install WantedBy) && -z $(unit_values "$unit" Install RequiredBy) ]]; then
+    echo static
+    return 0
+  fi
+  echo disabled
+  return 1
+}
+
+write_environment() {
+  local env_file tmp name
+  env_file="$(runtime_dir)/environment"
+  tmp=$(mktemp "$env_file.XXXXXX") || return 1
+  [[ -r $env_file ]] && cat "$env_file" >"$tmp"
+  for name in "$@"; do
+    [[ $name =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
+    [[ ${!name+set} ]] || continue
+    grep -v "^$name=" "$tmp" >"$tmp.new"
+    mv "$tmp.new" "$tmp"
+    printf '%s=%q\n' "$name" "${!name}" >>"$tmp"
+  done
+  mv "$tmp" "$env_file"
+}
+
+# Delayed jobs created by the systemd-run shim (--on-active) are the only
+# timers; each records its due time in microseconds in <unit>.timer.next.
+list_user_timers() {
+  local pattern=$1 file unit next now rows=() first=1
+  [[ $pattern == *.timer || $pattern == *\* ]] || pattern="$pattern.timer"
+  now=$(date +%s)
+
+  for file in "$(runtime_dir)"/*.timer.next; do
+    [[ -e $file ]] || continue
+    unit=$(basename "$file" .next)
+    # shellcheck disable=SC2053
+    [[ $unit == $pattern ]] || continue
+    if ! unit_active "$unit"; then
+      rm -f "$file"
+      continue
+    fi
+    read -r next <"$file"
+    rows+=("$unit $next")
+  done
+
+  if [[ $output == json ]]; then
+    printf '['
+    for row in "${rows[@]}"; do
+      unit=${row%% *}
+      next=${row#* }
+      ((first)) || printf ','
+      first=0
+      printf '{"unit":"%s","activates":"%s","next":%s,"left":%s,"last":null,"passed":null}' \
+        "$unit" "${unit%.timer}.service" "$next" "$((next - now * 1000000))"
+    done
+    printf ']\n'
+    return 0
+  fi
+
+  ((no_legend)) || printf '%-32s %-10s %-4s %-6s %-40s %s\n' NEXT LEFT LAST PASSED UNIT ACTIVATES
+  for row in "${rows[@]}"; do
+    unit=${row%% *}
+    next=$(( ${row#* } / 1000000 ))
+    printf '%-32s %-10s %-4s %-6s %-40s %s\n' "$(/bin/date -r "$next" '+%a %Y-%m-%d %H:%M:%S')" "$((next - now))s" - - "$unit" "${unit%.timer}.service"
+  done
+  ((no_legend)) || printf '\n%d timers listed.\n' "${#rows[@]}"
+}
+
+user_main() {
+  local unit status=0
+
+  case "$verb" in
+    start)
+      for unit in "${args[@]}"; do start_user_unit "$unit" || status=$?; done
+      ;;
+    stop)
+      for unit in "${args[@]}"; do stop_user_unit "$unit" || status=$?; done
+      ;;
+    restart | reload-or-restart | try-reload-or-restart | reload | try-restart | condrestart)
+      for unit in "${args[@]}"; do
+        unit=$(unit_name "$unit")
+        if [[ $verb == try-* || $verb == condrestart ]] && ! unit_active "$unit"; then
+          continue
+        fi
+        stop_user_unit "$unit"
+        start_user_unit "$unit" || status=$?
+      done
+      ;;
+    enable)
+      for unit in "${args[@]}"; do enable_user_unit "$unit" || status=$?; done
+      ;;
+    disable)
+      for unit in "${args[@]}"; do disable_user_unit "$unit" || status=$?; done
+      ;;
+    reenable)
+      for unit in "${args[@]}"; do disable_user_unit "$unit"; enable_user_unit "$unit" || status=$?; done
+      ;;
+    mask)
+      mkdir -p "$(user_config_dir)"
+      for unit in "${args[@]}"; do ln -sfn /dev/null "$(user_config_dir)/$(unit_name "$unit")"; done
+      ;;
+    unmask)
+      for unit in "${args[@]}"; do unit_masked "$(unit_name "$unit")" && rm -f "$(user_config_dir)/$(unit_name "$unit")"; done
+      ;;
+    is-active)
+      status=3
+      for unit in "${args[@]}"; do
+        if unit_active "$(unit_name "$unit")"; then say active; status=0; else say inactive; fi
+      done
+      ;;
+    is-failed)
+      status=1
+      for unit in "${args[@]}"; do say inactive; done
+      ;;
+    is-enabled)
+      status=1
+      for unit in "${args[@]}"; do
+        if state=$(user_unit_enabled "$(unit_name "$unit")"); then status=0; fi
+        say "$state"
+      done
+      ;;
+    status)
+      for unit in "${args[@]}"; do
+        unit=$(unit_name "$unit")
+        if unit_active "$unit"; then
+          printf '● %s\n     Active: active (running)\n   Main PID: %s\n' "$unit" "$(unit_main_pid "$unit")"
+        else
+          printf '○ %s\n     Active: inactive (dead)\n' "$unit"
+          status=3
+        fi
+      done
+      ;;
+    show)
+      for unit in "${args[@]}"; do
+        unit=$(unit_name "$unit")
+        for property in "${properties[@]:-ActiveState}"; do
+          case "$property" in
+            MainPID) value=$(unit_main_pid "$unit") ;;
+            ActiveState) unit_active "$unit" && value=active || value=inactive ;;
+            SubState) unit_active "$unit" && value=running || value=dead ;;
+            UnitFileState) value=$(user_unit_enabled "$unit") ;;
+            LoadState) find_unit "$unit" >/dev/null && value=loaded || value=not-found ;;
+            *) value="" ;;
+          esac
+          if ((value_only)); then printf '%s\n' "$value"; else printf '%s=%s\n' "$property" "$value"; fi
+        done
+      done
+      ;;
+    kill)
+      for unit in "${args[@]}"; do
+        pid=$(unit_main_pid "$(unit_name "$unit")")
+        ((pid > 0)) && kill "-$signal" "$pid"
+      done
+      ;;
+    import-environment)
+      if ((${#args[@]} == 0)); then
+        mapfile -t args < <(compgen -e)
+      fi
+      write_environment "${args[@]}"
+      # The compositor publishing its display is the session becoming ready.
+      # Start the target in its own session under daemon(8): whatever called
+      # us can be gone, and its process group signalled, long before every
+      # unit is up. Its messages go to syslog.
+      if [[ -n ${WAYLAND_DISPLAY:-} && ! -e "$(runtime_dir)/graphical-session.target.active" ]]; then
+        touch "$(runtime_dir)/graphical-session.target.active"
+        daemon -f -S -l user -s notice -T systemctl %%LOCALBASE%%/bin/bash "$0" --user start graphical-session.target
+      fi
+      ;;
+    set-environment)
+      for assignment in "${args[@]}"; do
+        [[ $assignment == *=* ]] || continue
+        export "${assignment%%=*}=${assignment#*=}"
+        write_environment "${assignment%%=*}"
+      done
+      ;;
+    unset-environment)
+      env_file="$(runtime_dir)/environment"
+      for name in "${args[@]}"; do
+        [[ -f $env_file ]] && grep -v "^$name=" "$env_file" >"$env_file.new" && mv "$env_file.new" "$env_file"
+      done
+      ;;
+    show-environment)
+      [[ -r "$(runtime_dir)/environment" ]] && cat "$(runtime_dir)/environment"
+      ;;
+    stop-all)
+      stop_all_user_units
+      ;;
+    list-units)
+      for file in "$(runtime_dir)"/*.pid; do
+        [[ -e $file ]] || continue
+        unit=$(basename "$file" .pid)
+        unit_active "$unit" && printf '%s loaded active running\n' "$unit"
+      done
+      ;;
+    list-unit-files)
+      while IFS= read -r dir; do
+        for file in "$dir"/*.service; do
+          [[ -e $file ]] || continue
+          unit=$(basename "$file")
+          printf '%s %s\n' "$unit" "$(user_unit_enabled "$unit")"
+        done
+      done < <(user_unit_dirs) | awk '!seen[$1]++'
+      ;;
+    list-timers)
+      list_user_timers "${args[0]:-*}"
+      ;;
+    daemon-reload | daemon-reexec | reset-failed | cancel | preset | revert | link)
+      ;;
+    *)
+      echo "systemctl --user: '$verb' is not supported on FreeBSD" >&2
+      status=1
+      ;;
+  esac
+
+  return "$status"
+}
+
+# -------------------------------------------------------------- system units
+
+# Arch unit names that have a different rc.d(8) name, or none (-).
+rc_name() {
+  local unit=${1%.service}
+  case "$unit" in
+    avahi-daemon) echo avahi_daemon ;;
+    cups | cups-browsed | org.cups.cupsd) echo cupsd ;;
+    sshd | ssh) echo sshd ;;
+    power-profiles-daemon) echo powerd ;;
+    systemd-timesyncd | chronyd) echo ntpd ;;
+    tailscaled) echo tailscaled ;;
+    docker) echo podman ;;
+    ufw) echo pf ;;
+    sddm | seatd | dbus | cupsd | ntpd | powerd | pf) echo "$unit" ;;
+    bluetooth | NetworkManager | iwd | systemd-resolved | systemd-networkd | systemd-oomd | \
+      fstrim | fstrim.timer | plocate-updatedb | plocate-updatedb.timer | snapper-* | \
+      limine-snapper-sync | supergfxd | asusd | thermald | intel_lpmd | bolt | \
+      fprintd | nvidia-* | systemd-* | *.timer | *.socket | *.path | *.mount | *.target)
+      echo - ;;
+    *) echo "${unit//-/_}" ;;
+  esac
+}
+
+as_root() {
+  if ((EUID == 0)); then
+    "$@"
+  else
+    sudo "$@"
+  fi
+}
+
+system_main() {
+  local unit rc status=0
+
+  case "$verb" in
+    reboot) exec shutdown -r now ;;
+    poweroff | halt) exec shutdown -p now ;;
+    suspend | hybrid-sleep | suspend-then-hibernate)
+      # logind would announce PrepareForSleep so Omarchy locks first; without
+      # it, secure the lock screen here before entering S3.
+      if [[ -n ${HYPRLAND_INSTANCE_SIGNATURE:-} ]] && command -v omarchy-system-sleep-lock >/dev/null; then
+        omarchy-system-sleep-lock 3000 >/dev/null 2>&1 || true
+      fi
+      exec acpiconf -s 3
+      ;;
+    hibernate)
+      echo "systemctl hibernate: suspend-to-disk is not supported on FreeBSD" >&2
+      return 1
+      ;;
+    daemon-reload | daemon-reexec | reset-failed | mask | unmask | preset | list-timers | cancel)
+      return 0
+      ;;
+    list-units | list-unit-files)
+      service -e
+      return 0
+      ;;
+  esac
+
+  for unit in "${args[@]}"; do
+    rc=$(rc_name "$unit")
+    if [[ $rc == - ]]; then
+      case "$verb" in
+        is-active | is-enabled | status) say inactive; status=3 ;;
+        *) ((quiet)) || echo "systemctl: $unit has no FreeBSD equivalent; skipping $verb" >&2 ;;
+      esac
+      continue
+    fi
+
+    case "$verb" in
+      enable)
+        as_root sysrc "${rc}_enable=YES" >/dev/null || status=1
+        ((now)) && { as_root service "$rc" start || status=1; }
+        ;;
+      disable)
+        as_root sysrc "${rc}_enable=NO" >/dev/null || status=1
+        ((now)) && as_root service "$rc" onestop >/dev/null 2>&1
+        ;;
+      start | stop | restart | reload | status)
+        as_root service "$rc" "one$verb" || status=$?
+        ;;
+      try-restart | reload-or-restart | try-reload-or-restart)
+        if service "$rc" onestatus >/dev/null 2>&1; then
+          as_root service "$rc" onerestart || status=$?
+        fi
+        ;;
+      is-active)
+        if service "$rc" onestatus >/dev/null 2>&1; then say active; else say inactive; status=3; fi
+        ;;
+      is-enabled)
+        if [[ $(sysrc -n "${rc}_enable" 2>/dev/null) =~ ^[Yy][Ee][Ss]$ ]]; then say enabled; else say disabled; status=1; fi
+        ;;
+      kill)
+        as_root pkill "-$signal" -x "$rc" || status=1
+        ;;
+      *)
+        echo "systemctl: '$verb' is not supported on FreeBSD" >&2
+        return 1
+        ;;
+    esac
+  done
+
+  return "$status"
+}
+
+if [[ -z $verb ]]; then
+  verb=list-units
+fi
+
+if ((user_mode)); then
+  user_main
+else
+  system_main
+fi

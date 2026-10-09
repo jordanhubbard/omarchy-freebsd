@@ -1,0 +1,79 @@
+#!%%LOCALBASE%%/bin/bash
+
+# systemd-run compatibility for Omarchy on FreeBSD.
+#
+# Runs a command as a transient "unit" supervised by daemon(8), sharing the
+# pidfile layout of the systemctl shim so `systemctl --user stop <unit>` and
+# `systemctl --user list-timers` see it. --on-active=<time> becomes a delayed
+# job recorded as <unit>.timer.
+
+unit=""
+delay=""
+wait_for_exit=0
+declare -a env_assignments=()
+
+while (($#)); do
+  case "$1" in
+    --user | --system | --collect | -G | --quiet | -q | --scope | --no-block | --pty | -t | --pipe | -P | --same-dir | -d | --send-sighup) ;;
+    --wait | -W) wait_for_exit=1 ;;
+    --unit=*) unit=${1#*=} ;;
+    -u | --unit) unit=$2; shift ;;
+    --on-active=*) delay=${1#*=} ;;
+    --on-active) delay=$2; shift ;;
+    --setenv=* | -E=*) env_assignments+=("${1#*=}") ;;
+    -E | --setenv) env_assignments+=("$2"); shift ;;
+    --property=* | -p=* | --timer-property=* | --description=* | --slice=* | --working-directory=* | --uid=* | --gid=* | --nice=* | --service-type=*) ;;
+    -p | --property | --timer-property | --description | --slice | --working-directory | --uid | --gid | --nice | --service-type) shift ;;
+    --) shift; break ;;
+    -*) echo "systemd-run: ignoring unsupported option $1" >&2 ;;
+    *) break ;;
+  esac
+  shift
+done
+
+(($#)) || { echo "Usage: systemd-run [options] command [args...]" >&2; exit 1; }
+
+for assignment in "${env_assignments[@]}"; do
+  export "${assignment%%=*}=${assignment#*=}"
+done
+
+if ((wait_for_exit)) && [[ -z $delay ]]; then
+  "$@"
+  exit
+fi
+
+seconds() {
+  local spec=$1 total=0 number unit
+  while [[ $spec =~ ^[[:space:]]*([0-9]+)[[:space:]]*([a-z]*)(.*)$ ]]; do
+    number=${BASH_REMATCH[1]}
+    unit=${BASH_REMATCH[2]}
+    spec=${BASH_REMATCH[3]}
+    case "$unit" in
+      "" | s | sec | second | seconds) total=$((total + number)) ;;
+      m | min | minute | minutes) total=$((total + number * 60)) ;;
+      h | hr | hour | hours) total=$((total + number * 3600)) ;;
+      d | day | days) total=$((total + number * 86400)) ;;
+      ms | msec) ;;
+      *) echo "systemd-run: unsupported time unit '$unit'" >&2; return 1 ;;
+    esac
+  done
+  printf '%s\n' "$total"
+}
+
+state_dir="${XDG_RUNTIME_DIR:-/tmp/omarchy-runtime-$(id -u)}/omarchy-units"
+mkdir -p "$state_dir" && chmod 700 "$state_dir"
+[[ -n $unit ]] || unit="run-$$-$RANDOM"
+unit=${unit%.service}
+unit=${unit%.timer}
+
+if [[ -n $delay ]]; then
+  delay_seconds=$(seconds "$delay") || exit 1
+  next=$(( ($(date +%s) + delay_seconds) * 1000000 ))
+  printf '%s\n' "$next" >"$state_dir/$unit.timer.next"
+  daemon -f -S -T "$unit" -P "$state_dir/$unit.timer.pid" \
+    %%LOCALBASE%%/bin/bash -c 'sleep "$1"; rm -f "$2" "$3"; shift 3; exec "$@"' \
+    bash "$delay_seconds" "$state_dir/$unit.timer.next" "$state_dir/$unit.timer.pid" "$@"
+  exit
+fi
+
+exec daemon -f -S -T "$unit" -P "$state_dir/$unit.service.pid" "$@"

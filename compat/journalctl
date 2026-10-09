@@ -1,0 +1,46 @@
+#!%%LOCALBASE%%/bin/bash
+
+# journalctl compatibility for Omarchy on FreeBSD. Omarchy's syslog output
+# (systemd-cat, supervised units) goes to /var/log/messages through syslogd(8);
+# this reads it back for the identifier, line count, and follow options Omarchy
+# uses. Other journal queries print nothing.
+
+log=/var/log/messages
+tag=""
+lines=""
+follow=0
+while (($#)); do
+  case "$1" in
+    -t | --identifier) tag=$2; shift ;;
+    --identifier=*) tag=${1#*=} ;;
+    -u | --unit | --user-unit) tag=${2%.service}; shift ;;
+    --unit=* | --user-unit=*) tag=${1#*=}; tag=${tag%.service} ;;
+    -n | --lines) lines=$2; shift ;;
+    --lines=*) lines=${1#*=} ;;
+    -f | --follow) follow=1 ;;
+    -b | --boot | -p | --priority | -o | --output | --since | --until) [[ ${2:-} != -* ]] && shift ;;
+    MESSAGE_ID=* | _*=*) exit 0 ;;
+    *) ;;
+  esac
+  shift
+done
+
+[[ -r $log ]] || { echo "journalctl: $log is not readable" >&2; exit 1; }
+
+filter() {
+  if [[ -n $tag ]]; then
+    grep --line-buffered -E "[[:space:]]${tag}(\[[0-9]+\])?:"
+  else
+    cat
+  fi
+}
+
+if ((follow)); then
+  tail -n 0 -F "$log" | filter
+else
+  if [[ -n $lines ]]; then
+    filter <"$log" | tail -n "$lines"
+  else
+    filter <"$log"
+  fi
+fi

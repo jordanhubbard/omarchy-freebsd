@@ -1,0 +1,10 @@
+#!/bin/bash
+
+# omarchy:summary=Prune superseded versions from the pacman package cache
+# omarchy:requires-sudo=true
+
+set -e
+
+echo -e "\e[32m\nPrune package cache\e[0m"
+sudo pkg clean -y || echo -e "\e[33mCould not prune the package cache.\e[0m" >&2
+echo

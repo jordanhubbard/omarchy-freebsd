@@ -1,0 +1,7 @@
+#!/bin/bash
+
+# omarchy:summary=Returns true when the laptop lid is closed
+# omarchy:hidden=true
+
+# acpi_lid(4) publishes the lid state: 0 closed, 1 open.
+[[ $(sysctl -n dev.acpi_lid.0.state 2>/dev/null) == 0 ]]

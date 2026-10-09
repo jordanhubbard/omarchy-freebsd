@@ -1,0 +1,233 @@
+#!/bin/bash
+
+# omarchy:summary=Bluetooth state and actions for the shell's Bluetooth panel, through FreeBSD's Bluetooth stack
+# omarchy:group=bluetooth
+# omarchy:args=status | devices | discover | power <on|off|is-on> | <pair|connect|disconnect|forget> <address>
+# omarchy:hidden=true
+
+# FreeBSD has no BlueZ. Its own stack (ng_ubt and ng_hci, hccontrol(8),
+# hcsecd(8) for link keys and PINs, bthidd(8) for keyboards and mice) covers
+# input devices; there is no Bluetooth audio. Changing anything needs root,
+# asked for with pkexec, which Omarchy's polkit rule grants an active local
+# wheel session without a password, as BlueZ and NetworkManager do on Arch.
+# What the panel polls is kept in world-readable files, so polling never needs
+# root.
+
+set -o pipefail
+
+STATE_DIR=/var/db/omarchy-bluetooth
+RUN_DIR=/var/run/omarchy-bluetooth
+HCSECD_CONF=/etc/bluetooth/hcsecd.conf
+BTHIDD_CONF=/etc/bluetooth/bthidd.conf
+SELF=%%PREFIX%%/bin/omarchy-bluetooth
+
+# The first HCI node, ubt0hci on a machine with one controller.
+hci_node() {
+  local node
+  node=$(ngctl list 2>/dev/null | awk '$2 ~ /hci$/ { sub(/:$/, "", $2); print $2; exit }')
+  [[ -n $node ]] || node=$(cat "$RUN_DIR/node" 2>/dev/null)
+  [[ -n $node ]] && echo "$node"
+}
+
+hcc() {
+  hccontrol -n "$node" "$@"
+}
+
+as_root() {
+  if ((EUID == 0)); then
+    "$SELF" "$@"
+  else
+    pkexec "$SELF" "$@"
+  fi
+}
+
+record_state() {
+  mkdir -p "$RUN_DIR"
+  chmod 0755 "$RUN_DIR"
+  node=$(hci_node)
+  if [[ -n $node ]] && hcc read_bd_addr >/dev/null 2>&1; then
+    echo "$node" >"$RUN_DIR/node"
+    hcc read_connection_list 2>/dev/null |
+      awk 'NR > 1 && $1 ~ /:/ { print $1 }' >"$RUN_DIR/connected"
+    touch "$RUN_DIR/on"
+  else
+    rm -f "$RUN_DIR/on" "$RUN_DIR/connected"
+  fi
+}
+
+json_status() {
+  local present=false enabled=false discovering=false
+  usbconfig 2>/dev/null | grep -qi 'bluetooth' && present=true
+  [[ -e $RUN_DIR/node ]] && present=true
+  [[ -e $RUN_DIR/on ]] && enabled=true
+  [[ -e $RUN_DIR/discovering ]] && discovering=true
+  jq -cn --argjson present "$present" --argjson enabled "$enabled" --argjson discovering "$discovering" \
+    '{ present: $present, enabled: $enabled, discovering: $discovering }'
+}
+
+# Known devices (paired here) and ones the last discovery found, one per
+# address: { address, name, paired, connected }.
+json_devices() {
+  {
+    [[ -r $STATE_DIR/known ]] && awk -F '\t' '{ printf "known\t%s\t%s\n", $1, $2 }' "$STATE_DIR/known"
+    [[ -r $RUN_DIR/discovered ]] && awk -F '\t' '{ printf "found\t%s\t%s\n", $1, $2 }' "$RUN_DIR/discovered"
+    [[ -r $RUN_DIR/connected ]] && awk '{ printf "conn\t%s\t\n", $1 }' "$RUN_DIR/connected"
+  } | jq -R -s -c '
+    split("\n") | map(select(length > 0) | split("\t")) as $rows
+    | ($rows | map(select(.[0] == "conn") | .[1] | ascii_downcase)) as $connected
+    | ($rows | map(select(.[0] == "known") | .[1] | ascii_downcase)) as $known
+    | $rows | map(select(.[0] != "conn")) | group_by(.[1] | ascii_downcase)
+    | map((.[0][1] | ascii_downcase) as $a | {
+        address: ($a | ascii_upcase),
+        name: (map(.[2]) | map(select(. != null and . != "")) | first // ""),
+        paired: ($known | index($a) != null),
+        connected: ($connected | index($a) != null)
+      })'
+}
+
+# ---- root side
+
+require_root() {
+  ((EUID == 0)) || { as_root "$@"; exit $?; }
+}
+
+enable_services() {
+  sysrc -q hcsecd_enable=YES sdpd_enable=YES bthidd_enable=YES >/dev/null
+  service hcsecd status >/dev/null 2>&1 || service hcsecd start >/dev/null 2>&1
+  service sdpd status >/dev/null 2>&1 || service sdpd start >/dev/null 2>&1
+}
+
+discover() {
+  local addr name
+  node=$(hci_node) || exit 1
+  mkdir -p "$RUN_DIR"
+  touch "$RUN_DIR/discovering"
+  : >"$RUN_DIR/discovered.new"
+  # An inquiry of about 10 seconds (8 x 1.28 s), up to 20 devices.
+  hcc inquiry 8 20 2>/dev/null | awk '/BD_ADDR:/ { print $2 }' | sort -u |
+  while read -r addr; do
+    name=$(hcc remote_name_request "$addr" 2>/dev/null | awk -F': ' '/Name:/ { print $2; exit }')
+    printf '%s\t%s\n' "$addr" "$name" >>"$RUN_DIR/discovered.new"
+  done
+  mv "$RUN_DIR/discovered.new" "$RUN_DIR/discovered"
+  chmod 0644 "$RUN_DIR/discovered"
+  rm -f "$RUN_DIR/discovering"
+  record_state
+}
+
+# Remove a device's block from an hcsecd/bthidd style config.
+drop_block() {
+  local file=$1 addr=$2
+  [[ -f $file ]] || return 0
+  awk -v addr="$addr" '
+    /^[[:space:]]*device[[:space:]]*\{/ { block = $0 "\n"; inblock = 1; drop = 0; next }
+    inblock { block = block $0 "\n"; if (tolower($0) ~ "bdaddr[[:space:]]+" tolower(addr)) drop = 1
+              if ($0 ~ /^[[:space:]]*\}/) { if (!drop) printf "%s", block; inblock = 0 } ; next }
+    { print }' "$file" >"$file.new" && mv "$file.new" "$file"
+}
+
+known_name() {
+  awk -F '\t' -v a="$1" 'tolower($1) == tolower(a) { print $2; exit }' "$RUN_DIR/discovered" "$STATE_DIR/known" 2>/dev/null
+}
+
+pair() {
+  local addr=$1 name
+  node=$(hci_node) || exit 1
+  name=$(known_name "$addr")
+  enable_services
+  # Secure Simple Pairing where the controller has it; the fixed PIN covers
+  # older devices that still ask for one.
+  hcc write_simple_pairing_mode 1 >/dev/null 2>&1 || true
+  drop_block "$HCSECD_CONF" "$addr"
+  printf 'device {\n\tbdaddr\t%s;\n\tname\t"%s";\n\tkey\tnokey;\n\tpin\t"0000";\n}\n' "$addr" "${name:-Bluetooth device}" >>"$HCSECD_CONF"
+  chmod 0600 "$HCSECD_CONF"
+  service hcsecd restart >/dev/null 2>&1
+  # bthidd needs the device's HID descriptor, which the device only hands
+  # over once paired.
+  if bthidcontrol -a "$addr" query >"$RUN_DIR/hid.$$" 2>/dev/null && grep -q 'bdaddr' "$RUN_DIR/hid.$$"; then
+    drop_block "$BTHIDD_CONF" "$addr"
+    cat "$RUN_DIR/hid.$$" >>"$BTHIDD_CONF"
+    service bthidd status >/dev/null 2>&1 && service bthidd restart >/dev/null 2>&1 || service bthidd start >/dev/null 2>&1
+  fi
+  rm -f "$RUN_DIR/hid.$$"
+  mkdir -p "$STATE_DIR"
+  awk -F '\t' -v a="$addr" 'tolower($1) != tolower(a)' "$STATE_DIR/known" 2>/dev/null >"$STATE_DIR/known.new"
+  printf '%s\t%s\n' "$addr" "${name:-}" >>"$STATE_DIR/known.new"
+  mv "$STATE_DIR/known.new" "$STATE_DIR/known"
+  chmod 0644 "$STATE_DIR/known"
+  record_state
+}
+
+connect() {
+  node=$(hci_node) || exit 1
+  hcc create_connection "$1" >/dev/null 2>&1
+  service bthidd status >/dev/null 2>&1 || service bthidd start >/dev/null 2>&1
+  record_state
+}
+
+disconnect() {
+  local handle
+  node=$(hci_node) || exit 1
+  handle=$(hcc read_connection_list 2>/dev/null | awk -v a="$1" 'tolower($1) == tolower(a) { print $2; exit }')
+  [[ -n $handle ]] && hcc disconnect "$handle" >/dev/null 2>&1
+  record_state
+}
+
+forget() {
+  disconnect "$1"
+  drop_block "$BTHIDD_CONF" "$1"
+  drop_block "$HCSECD_CONF" "$1"
+  hcc delete_stored_link_key "$1" >/dev/null 2>&1 || true
+  service hcsecd status >/dev/null 2>&1 && service hcsecd restart >/dev/null 2>&1
+  service bthidd status >/dev/null 2>&1 && service bthidd restart >/dev/null 2>&1
+  awk -F '\t' -v a="$1" 'tolower($1) != tolower(a)' "$STATE_DIR/known" 2>/dev/null >"$STATE_DIR/known.new" &&
+    mv "$STATE_DIR/known.new" "$STATE_DIR/known"
+  record_state
+}
+
+power() {
+  local dev
+  case $1 in
+    is-on) [[ -e $RUN_DIR/on ]]; return ;;
+    on)
+      for dev in $(ngctl list 2>/dev/null | awk '$2 ~ /^ubt[0-9]+:$/ { sub(/:$/, "", $2); print $2 }'); do
+        service bluetooth start "$dev" >/dev/null 2>&1
+      done
+      ;;
+    off)
+      for dev in $(ngctl list 2>/dev/null | awk '$2 ~ /^ubt[0-9]+:$/ { sub(/:$/, "", $2); print $2 }'); do
+        service bluetooth stop "$dev" >/dev/null 2>&1
+      done
+      ;;
+  esac
+  record_state
+}
+
+valid_address() {
+  [[ ${1:-} =~ ^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$ ]] || {
+    echo "Usage: omarchy-bluetooth <pair|connect|disconnect|forget> <address>" >&2
+    exit 1
+  }
+}
+
+case ${1:-} in
+  status) json_status ;;
+  devices) json_devices ;;
+  refresh) require_root refresh; record_state ;;
+  discover) require_root discover; discover ;;
+  power)
+    [[ ${2:-} == is-on ]] && { power is-on; exit; }
+    [[ ${2:-} == on || ${2:-} == off ]] || { echo "Usage: omarchy-bluetooth power <on|off|is-on>" >&2; exit 1; }
+    require_root power "$2"
+    power "$2"
+    ;;
+  pair | connect | disconnect | forget)
+    valid_address "${2:-}"
+    require_root "$1" "$2"
+    "$1" "$2"
+    ;;
+  *)
+    echo "Usage: omarchy-bluetooth status | devices | discover | power <on|off|is-on> | <pair|connect|disconnect|forget> <address>" >&2
+    exit 1
+    ;;
+esac

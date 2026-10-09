@@ -1,0 +1,323 @@
+# Omarchy package names -> FreeBSD ports origins.
+#
+# Omarchy's commands name Arch packages. omarchy-pkg-add, -present, -missing
+# and -drop translate each name through this table:
+#
+#   <origin>   a FreeBSD port, installed and queried with pkg(8) by origin
+#   @base      provided by the FreeBSD base system; always present
+#   -          no FreeBSD equivalent (Linux kernel, firmware, bootloader or
+#              Arch tooling specific, or a proprietary Linux-only binary)
+#
+# Names not listed here are looked up as a package of the same name.
+
+# Desktop core
+hyprland                        x11-wm/hyprland
+hyprland-guiutils               x11/hyprland-guiutils
+hyprland-preview-share-picker   x11/hyprland-preview-share-picker
+hyprpicker                      x11/hyprpicker
+hyprsunset                      accessibility/hyprsunset
+quickshell                      x11/quickshell
+quickshell-git                  x11/quickshell
+uwsm                            @base
+sddm                            x11/sddm
+xdg-desktop-portal-hyprland     x11/xdg-desktop-portal-hyprland
+xdg-desktop-portal-gtk          x11/xdg-desktop-portal-gtk
+xdg-terminal-exec               deskutils/xdg-terminal-exec
+gtk4-layer-shell                x11-toolkits/gtk4-layer-shell
+egl-wayland                     graphics/egl-wayland
+qt6-wayland                     graphics/qt6-wayland
+qt6-imageformats                graphics/qt6-imageformats
+wl-clipboard                    x11/wl-clipboard
+wtype                           x11/wtype
+grim                            x11/grim
+slurp                           x11/slurp
+satty                           graphics/satty
+ydotool                         deskutils/ydotool
+fcitx5                          textproc/fcitx5
+fcitx5-gtk                      textproc/fcitx5-gtk
+fcitx5-qt                       textproc/fcitx5-qt
+gnome-keyring                   security/gnome-keyring
+libsecret                       security/libsecret
+gnome-themes-extra              x11-themes/gnome-themes-extra
+yaru-icon-theme                 x11-themes/yaru-icon-theme
+libappindicator-gtk3            devel/libappindicator
+python-gobject                  devel/py-pygobject
+python-poetry-core              devel/py-poetry-core
+python-terminaltexteffects      devel/py-terminaltexteffects
+python-protobuf                 devel/py-protobuf
+python-gpgme                    security/py-gpgme
+
+# Omarchy applications
+aether                          x11-themes/aether
+omacalc                         math/omacalc
+omacut                          multimedia/omacut
+omasnap                         graphics/omasnap
+tensaku                         graphics/tensaku
+omawrite                        editors/omawrite
+omarchy-nvim                    editors/omarchy-nvim
+owe                             x11/owe
+owe-lockfeed                    x11/owe-lockfeed
+cliamp                          audio/cliamp
+herdr                           sysutils/herdr
+omarchy-herdr                   sysutils/herdr
+ttfx                            misc/ttfx
+tobi-try                        devel/tobi-try
+usage                           devel/usage
+tzupdate                        sysutils/tzupdate
+udiskie                         sysutils/udiskie
+lazydocker                      sysutils/lazydocker
+omarchy-keyring                 @base
+
+# Audio and video
+pipewire                        multimedia/pipewire
+pipewire-pulse                  multimedia/pipewire
+pipewire-alsa                   multimedia/pipewire
+pipewire-jack                   multimedia/pipewire
+wireplumber                     multimedia/wireplumber
+gst-plugin-pipewire             multimedia/pipewire
+libpulse                        audio/pulseaudio
+pamixer                         audio/pamixer
+alsa-utils                      audio/alsa-utils
+lsp-plugins-lv2                 audio/lsp-plugins-lv2
+mpv                             multimedia/mpv
+mpv-mpris                       multimedia/mpv-mpris
+ffmpegthumbnailer               multimedia/ffmpegthumbnailer
+obs-studio                      multimedia/obs-studio
+kdenlive                        multimedia/kdenlive
+moonlight-qt                    games/moonlight-qt
+yt-dlp                          www/yt-dlp
+libva-intel-driver              multimedia/libva-intel-driver
+intel-media-driver              multimedia/libva-intel-media-driver
+libva-nvidia-driver             multimedia/libva-nvidia-driver
+libvpl                          multimedia/libvpl
+vpl-gpu-rt                      multimedia/libvpl
+vulkan-intel                    graphics/mesa-dri
+vulkan-radeon                   graphics/mesa-dri
+
+# Graphics and documents
+imagemagick                     graphics/ImageMagick7
+libvips                         graphics/vips
+imv                             graphics/imv
+evince                          graphics/evince
+pinta                           graphics/pinta
+xournalpp                       graphics/xournalpp
+webp-pixbuf-loader              graphics/webp-pixbuf-loader
+tesseract                       graphics/tesseract
+tesseract-data-eng              graphics/tesseract-data
+zbar                            graphics/zbar
+qrencode                        graphics/libqrencode
+libreoffice-fresh               editors/libreoffice
+obsidian                        textproc/obsidian
+
+# Files and storage
+nautilus                        x11-fm/nautilus
+nautilus-python                 x11-fm/nautilus-python
+sushi                           x11-fm/sushi
+gvfs-mtp                        filesystems/gvfs
+gvfs-nfs                        filesystems/gvfs
+gvfs-smb                        filesystems/gvfs
+exfatprogs                      filesystems/exfat-utils
+dosfstools                      @base
+unzip                           @base
+plocate                         sysutils/plocate
+inotify-tools                   sysutils/inotify-tools
+
+# Fonts
+fontconfig                      x11-fonts/fontconfig
+noto-fonts                      x11-fonts/noto-basic
+noto-fonts-cjk                  x11-fonts/noto
+noto-fonts-emoji                x11-fonts/noto-emoji
+ttf-jetbrains-mono-nerd-basic   x11-fonts/nerd-fonts-jetbrainsmono
+ttf-ia-writer                   x11-fonts/ia-writer-fonts
+woff2-font-awesome              x11-fonts/font-awesome
+
+# Terminal and shell tools
+foot                            x11/foot
+bash-completion                 shells/bash-completion
+bat                             textproc/bat
+btop                            sysutils/btop
+dua-cli                         sysutils/dua-cli
+dust                            sysutils/dust
+eza                             sysutils/eza
+fd                              sysutils/fd
+fzf                             textproc/fzf
+gum                             devel/gum
+jq                              textproc/jq
+ripgrep                         textproc/ripgrep
+starship                        shells/starship
+tldr                            sysutils/tldr
+tmux                            sysutils/tmux
+zoxide                          sysutils/zoxide
+fastfetch                       sysutils/fastfetch
+inxi                            sysutils/inxi
+lazygit                         devel/lazygit
+socat                           net/socat
+whois                           net/whois
+rlwrap                          devel/rlwrap
+tree-sitter-cli                 devel/tree-sitter-cli
+nvim                            editors/neovim
+helix                           editors/helix
+zed                             editors/zed
+visual-studio-code-bin          editors/vscode
+less                            @base
+vi                              @base
+man-db                          @base
+inetutils                       @base
+openbsd-netcat                  @base
+openssh                         @base
+usbutils                        sysutils/usbutils
+fakeroot                        security/fakeroot
+
+# Development
+git                             devel/git
+clang                           @base
+llvm                            devel/llvm
+base-devel                      @base
+autoconf-archive                devel/autoconf-archive
+lua51                           lang/lua51
+luarocks                        devel/lua-luarocks
+ruby                            lang/ruby34
+mise-bin                        sysutils/mise
+nodejs                          www/node
+node                            www/node
+libyaml                         textproc/libyaml
+mariadb-libs                    databases/mariadb118-client
+postgresql-libs                 databases/postgresql18-client
+dotnet-runtime                  lang/dotnet
+php                             lang/php85
+composer                        devel/php-composer
+docker-buildx                   sysutils/docker-buildx
+docker-compose                  sysutils/docker-compose
+
+# Printing and discovery
+cups                            print/cups
+cups-browsed                    print/cups-filters
+cups-filters                    print/cups-filters
+cups-pdf                        print/cups-pdf
+cups-pk-helper                  print/cups-pk-helper
+system-config-printer           print/system-config-printer
+avahi                           net/avahi
+nss-mdns                        dns/nss_mdns
+
+# Network services and security
+tailscale                       security/tailscale
+libfido2                        security/libfido2
+pam-u2f                         security/pam_u2f
+fprintd                         security/fprintd
+libfprint                       security/libfprint
+libfprint-git                   security/libfprint
+freerdp                         net/freerdp
+
+# Browsers and applications
+chromium                        www/chromium
+firefox                         www/firefox
+signal-desktop                  net-im/signal-desktop
+1password-cli                   security/1password-client2
+gnome-calculator                math/gnome-calculator
+wine-staging                    emulators/wine-devel
+wine-gecko                      emulators/wine-gecko
+wine-mono                       emulators/wine-mono
+winetricks                      emulators/winetricks
+openclaw                        misc/openclaw
+
+# Linux kernel, firmware, boot and hardware support: no FreeBSD equivalent.
+base                            @base
+linux-omarchy                   -
+linux-omarchy-headers           -
+linux-t2                        -
+linux-t2-headers                -
+linux-firmware                  -
+linux-firmware-marvell          -
+sof-firmware                    -
+wireless-regdb                  -
+apple-bcm-firmware              -
+apple-t2-audio-config           -
+kernel-modules-hook             -
+dkms                            -
+broadcom-wl-dkms                -
+macbook12-spi-driver-dkms       -
+nvidia-dkms                     -
+nvidia-open-dkms                -
+nvidia-580xx-dkms               -
+nvidia-utils                    -
+nvidia-580xx-utils              -
+lib32-nvidia-utils              -
+lib32-nvidia-580xx-utils        -
+tuxedo-drivers-nocompatcheck-dkms -
+yt6801-dkms                     -
+xpadneo-dkms                    -
+dell-xps13-sidecar-amps         -
+dell-xps-touchpad-haptics       -
+intel-ipu7-camera               -
+intel-lpmd                      -
+thermald                        -
+t2fanrd                         -
+tiny-dfr                        -
+asusctl                         -
+supergfxctl                     -
+asdcontrol                      -
+qmk-hid                         -
+bolt                            -
+ddcutil                         -
+brightnessctl                   @base
+power-profiles-daemon           @base
+plymouth                        -
+limine                          -
+limine-mkinitcpio-hook          -
+limine-snapper-sync             -
+snapper                         -
+btrfs-progs                     -
+zram-generator                  -
+qemu-user-static-binfmt         -
+vulkan-asahi                    -
+bluez                           -
+bluez-tools                     -
+bluez-utils                     -
+networkmanager                  -
+ufw                             -
+ufw-docker                      -
+docker                          -
+gpu-screen-recorder             -
+gnome-disk-utility              -
+flatpak                         -
+umu-launcher                    -
+
+# Arch packaging tools
+pacman                          -
+pacman-contrib                  -
+expac                           -
+yay                             -
+yay-debug                       -
+
+# Proprietary or Linux-only binary distributions
+1password                       -
+brave-bin                       -
+brave-origin-bin                -
+brave-origin-beta-bin           -
+google-chrome                   -
+microsoft-edge-stable-bin       -
+zen-browser-bin                 -
+cursor-bin                      -
+sublime-text-4                  -
+spotify                         -
+steam                           -
+minecraft-launcher              -
+heroic-games-launcher-bin       -
+lutris                          -
+dropbox                         -
+dropbox-cli                     -
+nautilus-dropbox                -
+nordvpn-bin                     -
+localsend                       -
+voxtype-bin                     -
+sunshine                        -
+hermes-desktop                  -
+perplexity                      -
+openai-codex-desktop            -
+t3code-bin                      -
+once-bin                        -
+grok-bot                        -
+symfony-cli                     -
+omazed                          -
+omarchy-emacs                   -
+

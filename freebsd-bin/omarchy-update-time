@@ -1,0 +1,11 @@
+#!/bin/bash
+
+# omarchy:summary=Restart system time synchronization
+# omarchy:requires-sudo=true
+
+echo "Updating time..."
+if service ntpd onestatus >/dev/null 2>&1; then
+  sudo service ntpd onerestart
+else
+  sudo ntpdate -b pool.ntp.org
+fi

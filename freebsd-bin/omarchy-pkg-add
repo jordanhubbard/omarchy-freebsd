@@ -1,0 +1,38 @@
+#!/bin/bash
+
+# omarchy:summary=Install packages if they are missing
+# omarchy:args=<packages...>
+# omarchy:examples=omarchy pkg add jq ripgrep
+# omarchy:requires-sudo=true
+
+source "$OMARCHY_PATH/freebsd/pkg.sh"
+
+targets=()
+unavailable=()
+for pkg in "$@"; do
+  pkg_installed "$pkg" && continue
+  if pkg_unavailable "$pkg"; then
+    unavailable+=("$pkg")
+  else
+    targets+=("$(pkg_origin "$pkg")")
+  fi
+done
+
+if (( ${#unavailable[@]} > 0 )); then
+  echo -e "\033[31mError: Not available on FreeBSD: ${unavailable[*]}\033[0m" >&2
+  exit 1
+fi
+
+if (( ${#targets[@]} > 0 )); then
+  pkg_as_root pkg install -y -- "${targets[@]}" || exit 1
+fi
+
+for pkg in "$@"; do
+  # Secondary check to handle states where pkg doesn't actually register an error
+  if ! pkg_installed "$pkg"; then
+    echo -e "\033[31mError: Package '$pkg' did not install\033[0m" >&2
+    exit 1
+  fi
+done
+
+exit 0

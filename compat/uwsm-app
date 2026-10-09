@@ -1,0 +1,46 @@
+#!%%LOCALBASE%%/bin/bash
+
+# uwsm-app compatibility for Omarchy on FreeBSD.
+#
+# uwsm-app places an application in its own systemd scope. FreeBSD has no
+# scopes, so the application simply replaces this process. The Omarchy compat
+# and GNU userland directories are removed from PATH first: they exist for
+# Omarchy's own scripts, not for the applications a user launches.
+
+OMARCHY_COMPAT="%%PREFIX%%/libexec/omarchy/compat"
+OMARCHY_GNUBIN="%%PREFIX%%/libexec/omarchy/gnubin"
+
+terminal=0
+while (($#)); do
+  case "$1" in
+    -s | -t | -a | -u | -d | -p | -S | -g) shift ;;
+    -T) terminal=1 ;;
+    --) shift; break ;;
+    -*) ;;
+    *) break ;;
+  esac
+  shift
+done
+
+(($#)) || { echo "Usage: uwsm-app [--] command [args...]" >&2; exit 1; }
+
+clean_path=""
+IFS=: read -ra entries <<<"$PATH"
+for entry in "${entries[@]}"; do
+  [[ $entry == "$OMARCHY_COMPAT" || $entry == "$OMARCHY_GNUBIN" ]] && continue
+  clean_path+="${clean_path:+:}$entry"
+done
+export PATH=$clean_path
+
+if ((terminal)); then
+  exec xdg-terminal-exec "$@"
+fi
+
+# Desktop entry IDs, optionally with an action suffix gtk-launch cannot run.
+if [[ $1 == *.desktop || $1 == *.desktop:* ]]; then
+  id=${1%%:*}
+  shift
+  exec gtk-launch "$id" "$@"
+fi
+
+exec "$@"

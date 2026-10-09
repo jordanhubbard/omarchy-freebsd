@@ -1,0 +1,106 @@
+#!/bin/bash
+
+# omarchy:summary=Point Omarchy at a local checkout after reboot
+# omarchy:group=dev
+# omarchy:args=<path-to-checkout> [--no-reboot]
+# omarchy:examples=omarchy dev link ~/src/omarchy
+
+# FreeBSD version. A checkout of Omarchy is Arch-flavored, so it is not run
+# directly: freebsdize builds the FreeBSD tree the port would install from it
+# (the port's patches, FreeBSD commands, paths) under ~/.local/share, and
+# OMARCHY_PATH points there. omarchy-dev-sync rebuilds it, and keeps it in
+# step with the checkout while an Omarchy session runs.
+
+set -euo pipefail
+
+if (( EUID == 0 )); then
+  echo "Error: run omarchy-dev-link as your user, not under sudo." >&2
+  exit 1
+fi
+
+prompt_reboot=1
+sudoers_file="/etc/sudoers.d/omarchy-dev-path"
+# Root's command path, ahead of which the tree's bin goes: FreeBSD keeps
+# system commands in /sbin, /bin, and /usr/sbin, and packages under /usr/local.
+system_secure_path="/sbin:/bin:/usr/sbin:/usr/bin:/usr/local/sbin:/usr/local/bin"
+tree="${XDG_DATA_HOME:-$HOME/.local/share}/omarchy-dev"
+
+if (( $# < 1 || $# > 2 )) || [[ $1 == "-h" || $1 == "--help" ]]; then
+  cat <<USAGE
+Usage: omarchy dev link <path-to-checkout> [--no-reboot]
+
+Builds the FreeBSD tree for <path-to-checkout> in $tree and
+writes /etc/omarchy.conf so OMARCHY_PATH resolves to it after reboot. While an
+Omarchy session runs, edits to the checkout are carried into the tree as they
+are saved; "omarchy dev sync" does it by hand.
+
+Also writes $sudoers_file so sudo resolves omarchy-* from the tree.
+
+"omarchy dev unlink" goes back to the installed Omarchy.
+USAGE
+  exit 0
+fi
+
+if (( $# == 2 )); then
+  if [[ $2 == "--no-reboot" ]]; then
+    prompt_reboot=0
+  else
+    echo "Usage: omarchy dev link <path-to-checkout> [--no-reboot]" >&2
+    exit 1
+  fi
+fi
+
+conf_quote() {
+  local value="$1"
+  value=${value//\\/\\\\}
+  value=${value//\"/\\\"}
+  value=${value//\$/\\\$}
+  value=${value//\`/\\\`}
+  printf '"%s"' "$value"
+}
+
+sudoers_quote() {
+  local value="$1"
+  value=${value//\\/\\\\}
+  value=${value//\"/\\\"}
+  printf '"%s"' "$value"
+}
+
+checkout=$(realpath "$1" 2>/dev/null) || {
+  echo "Error: path does not exist: $1" >&2
+  exit 1
+}
+
+echo "Building the FreeBSD tree for $checkout..."
+if ! %%PREFIX%%/libexec/omarchy/freebsdize "$checkout" "$tree"; then
+  echo "Some of the port's FreeBSD patches did not apply; the tree may need them redone for this checkout." >&2
+fi
+
+staged_sudoers=$(mktemp)
+trap 'rm -f "$staged_sudoers"' EXIT
+{
+  printf 'Defaults secure_path='
+  sudoers_quote "$tree/bin:$system_secure_path"
+  printf '\n'
+} >"$staged_sudoers"
+if ! visudo -cf "$staged_sudoers" >/dev/null; then
+  echo "Error: refusing to install an invalid $sudoers_file for $tree" >&2
+  exit 1
+fi
+
+{
+  printf 'export OMARCHY_PATH='
+  conf_quote "$tree"
+  printf '\nexport OMARCHY_DEV_CHECKOUT='
+  conf_quote "$checkout"
+  printf '\n'
+} | sudo tee /etc/omarchy.conf >/dev/null
+sudo install -m 440 -o root -g wheel "$staged_sudoers" "$sudoers_file"
+
+echo "Pointed Omarchy at $tree, built from $checkout"
+echo "sudo now resolves omarchy-* from $tree/bin"
+echo
+
+if (( prompt_reboot )) && gum confirm "Reboot now to activate?"; then
+  omarchy-system-reboot
+fi

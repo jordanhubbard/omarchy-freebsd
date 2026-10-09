@@ -1,0 +1,72 @@
+#!/bin/bash
+
+# omarchy:summary=Install a Linux-only coding tool to run under the Linuxulator
+# omarchy:args=<cursor-agent|opencode> | --enable
+# omarchy:hidden=true
+
+# FreeBSD runs Linux binaries through the Linuxulator. Tools that ship only for
+# Linux are installed under ~/.local/share/omarchy/linux-tools and run from
+# there; --enable just makes sure the Linuxulator is on (claude-code needs it
+# too).
+
+set -euo pipefail
+
+dir=${XDG_DATA_HOME:-$HOME/.local/share}/omarchy/linux-tools
+
+case $(uname -m) in
+  amd64) arch=x64 ;;
+  arm64 | aarch64) arch=arm64 ;;
+  *) echo "No Linux build of this tool for $(uname -m)." >&2; exit 1 ;;
+esac
+
+# The linux service mounts what Linux programs expect under /compat/linux,
+# including fdescfs with linrdlnk, without which some hang at startup.
+enable_linuxulator() {
+  if [[ $(sysrc -n linux_enable 2>/dev/null) == YES ]] && mount | grep -q ' /compat/linux/dev/fd '; then
+    return 0
+  fi
+  echo "Turning on FreeBSD's Linux compatibility (the Linuxulator)..."
+  pkg info -e linux_base-rl9 || sudo pkg install -y linux_base-rl9
+  sudo sysrc -q linux_enable=YES >/dev/null
+  sudo service linux start
+}
+
+install_cursor_agent() {
+  local release tmp
+  # Cursor's installer names the current release; take its Linux package.
+  release=$(fetch -qo - https://cursor.com/install |
+    sed -n 's|.*DOWNLOAD_URL="\(https://downloads\.cursor\.com/lab/[^/]*\)/.*|\1|p' | head -n 1)
+  [[ -n $release ]] || { echo "Could not find the current Cursor CLI release." >&2; exit 1; }
+  tmp=$(mktemp -d)
+  fetch -qo - "$release/linux/$arch/agent-cli-package.tar.gz" | tar -xzf - -C "$tmp"
+  rm -rf "$dir/cursor-agent"
+  mv "$tmp/dist-package" "$dir/cursor-agent"
+  rm -rf "$tmp"
+}
+
+install_opencode() {
+  local tmp
+  tmp=$(mktemp -d)
+  fetch -qo - "https://github.com/sst/opencode/releases/latest/download/opencode-linux-$arch.tar.gz" | tar -xzf - -C "$tmp"
+  mkdir -p "$dir/opencode"
+  mv "$tmp/opencode" "$dir/opencode/opencode"
+  rm -rf "$tmp"
+}
+
+tool=${1:-}
+case $tool in
+  --enable) enable_linuxulator; exit 0 ;;
+  cursor-agent | opencode) ;;
+  *) echo "Usage: omarchy-agent-install-linux <cursor-agent|opencode> | --enable" >&2; exit 1 ;;
+esac
+
+enable_linuxulator
+[[ -x $dir/$tool/$tool ]] && exit 0
+
+echo "Installing $tool (a Linux build, run by the Linuxulator)..."
+mkdir -p "$dir"
+case $tool in
+  cursor-agent) install_cursor_agent ;;
+  opencode) install_opencode ;;
+esac
+echo "Installed $tool."

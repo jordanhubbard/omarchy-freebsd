@@ -1,0 +1,53 @@
+#!/bin/bash
+
+# omarchy:summary=Rebuild the FreeBSD tree of the linked checkout
+# omarchy:group=dev
+# omarchy:args=[--watch]
+# omarchy:examples=omarchy dev sync | omarchy dev sync --watch
+
+# In repo mode ("omarchy dev link") OMARCHY_PATH is a FreeBSD tree built from
+# a checkout. This rebuilds it; with --watch it rebuilds after every change to
+# the checkout, which the Omarchy session runs for as long as it is open.
+
+set -euo pipefail
+
+if [[ -f /etc/omarchy.conf ]]; then
+  # shellcheck disable=SC1091
+  . /etc/omarchy.conf
+fi
+checkout=${OMARCHY_DEV_CHECKOUT:-}
+tree=${OMARCHY_PATH:-}
+if [[ -z $checkout || -z $tree ]]; then
+  echo "Omarchy is not linked to a checkout; see omarchy dev link." >&2
+  exit 1
+fi
+
+sync() {
+  if %%PREFIX%%/libexec/omarchy/freebsdize "$checkout" "$tree"; then
+    return 0
+  fi
+  omarchy-notification-send -u critical "Omarchy dev" "Some FreeBSD patches no longer apply to the checkout." 2>/dev/null || true
+  return 1
+}
+
+case ${1:-} in
+  "")
+    sync
+    echo "Rebuilt $tree from $checkout"
+    ;;
+  --watch)
+    # Stop inotifywait along with this script.
+    trap 'pkill -P $$ 2>/dev/null' EXIT
+    sync || true
+    inotifywait -m -r -q -e close_write,create,delete,move --exclude '/\.git/' "$checkout" |
+      while read -r _; do
+        # Let a burst of saves (a git checkout, a formatter) settle first.
+        while read -r -t 1 _; do :; done
+        sync || true
+      done
+    ;;
+  *)
+    echo "Usage: omarchy dev sync [--watch]" >&2
+    exit 1
+    ;;
+esac

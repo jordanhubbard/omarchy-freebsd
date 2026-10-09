@@ -1,0 +1,8 @@
+# Omarchy session defaults specific to FreeBSD. Sourced by uwsm before the
+# Omarchy defaults in 10-omarchy.
+
+# Backlight devices are character devices under /dev/backlight (backlight(9)).
+export OMARCHY_BACKLIGHT_PATH=/dev/backlight
+
+# Hyprland's seat access goes through seatd(8) on FreeBSD.
+export LIBSEAT_BACKEND=${LIBSEAT_BACKEND:-seatd}

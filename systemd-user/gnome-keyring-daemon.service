@@ -1,0 +1,11 @@
+[Unit]
+Description=GNOME Keyring daemon
+
+[Service]
+Type=simple
+ExecStart=%%PREFIX%%/bin/gnome-keyring-daemon --foreground --components=secrets
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=graphical-session.target
