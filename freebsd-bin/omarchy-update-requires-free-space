@@ -1,0 +1,18 @@
+#!/bin/bash
+
+# omarchy:summary=Check free disk space required for a desktop update
+# omarchy:hidden=true
+
+set -euo pipefail
+[[ ${OMARCHY_UPDATE_FORCE:-0} != 1 ]] || exit 0
+product=Omarchy
+pkg info -e daemonarchy >/dev/null 2>&1 && product=Daemonarchy
+available_kib=$(df -k / | awk 'END { print $4 }')
+if [[ ! $available_kib =~ ^[0-9]+$ ]]; then
+  echo "Cannot determine free space for the $product update." >&2
+  exit 1
+fi
+if ((available_kib < 10 * 1024 * 1024)); then
+  echo "You need at least 10 GiB free to safely update $product."
+  exit 1
+fi

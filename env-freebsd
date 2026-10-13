@@ -6,3 +6,11 @@ export OMARCHY_BACKLIGHT_PATH=/dev/backlight
 
 # Hyprland's seat access goes through seatd(8) on FreeBSD.
 export LIBSEAT_BACKEND=${LIBSEAT_BACKEND:-seatd}
+
+# Name the installed distribution in the update widget. The compatibility
+# layer also supports standalone Omarchy, without the Daemonarchy package.
+if pkg info -e daemonarchy >/dev/null 2>&1; then
+  export OMARCHY_DISTRIBUTION_NAME=Daemonarchy
+else
+  export OMARCHY_DISTRIBUTION_NAME=Omarchy
+fi

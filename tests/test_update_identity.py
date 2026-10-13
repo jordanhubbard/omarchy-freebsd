@@ -79,6 +79,19 @@ esac
         self.assertEqual(result.returncode, 1)
         self.assertIn("Omarchy is up to date", result.stdout)
 
+    def test_space_warning_names_daemonarchy(self):
+        self.command("df", "echo 'disk 9999999 9999998 1 99% /'\n")
+        result = self.run_script("omarchy-update-requires-free-space")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("safely update Daemonarchy", result.stdout)
+
+    def test_session_names_daemonarchy_for_the_widget(self):
+        result = subprocess.run(["bash", "-c", 'source "$1"; echo "$OMARCHY_DISTRIBUTION_NAME"',
+                                 "bash", str(ROOT / "env-freebsd")],
+                                env=self.env, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "Daemonarchy")
+
     def test_failure_points_to_daemonarchy_support(self):
         for name in ("omarchy-update-lock", "omarchy-update-stay-awake",
                      "omarchy-update-requires-free-space"):
