@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# omarchy:summary=Check whether Omarchy updates are available.
+# omarchy:summary=Check whether desktop updates are available from the package repository.
 
 set -euo pipefail
 
@@ -22,16 +22,30 @@ fi
 
 # Compare against the last fetched catalog; refreshing it needs root and is
 # done by omarchy-update (and by periodic(8) when enabled).
-installed=$(pkg query '%v' omarchy 2>/dev/null || true)
-available=$(pkg rquery -U '%v' omarchy 2>/dev/null | head -n 1 || true)
-if [[ -n $installed && -n $available && $(pkg version -t "$installed" "$available") == "<" ]]; then
-  updates+=("omarchy $installed -> $available")
+product=Omarchy
+packages=(omarchy)
+repository=()
+if pkg info -e daemonarchy >/dev/null 2>&1; then
+  product=Daemonarchy
+  packages=(daemonarchy omarchy)
+  repository=(-r Daemonarchy)
 fi
+for package in "${packages[@]}"; do
+  installed=$(pkg query '%v' "$package" 2>/dev/null || true)
+  if ! available=$(pkg rquery -U "${repository[@]}" '%v' "$package" 2>/dev/null); then
+    echo "Cannot check $product updates in the local catalog. Run omarchy update to refresh it." >&2
+    exit 2
+  fi
+  available=$(head -n 1 <<<"$available")
+  if [[ -n $installed && -n $available && $(pkg version -t "$installed" "$available") == "<" ]]; then
+    updates+=("$product: $package $installed -> $available")
+  fi
+done
 
 if (( ${#updates[@]} > 0 )); then
   printf '%s\n' "${updates[@]}"
   exit 0
 else
-  echo "Omarchy is up to date"
+  echo "$product is up to date"
   exit 1
 fi

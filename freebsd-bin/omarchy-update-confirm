@@ -1,0 +1,24 @@
+#!/bin/bash
+
+# omarchy:summary=Confirm a desktop and FreeBSD package update
+
+product=Omarchy
+releases=https://github.com/jordanhubbard/omarchy-freebsd/releases
+sources='Desktop and application updates use the configured FreeBSD package repositories.'
+if pkg info -e daemonarchy >/dev/null 2>&1; then
+  product=Daemonarchy
+  releases=https://github.com/jordanhubbard/daemonarchy/releases
+  sources='Daemonarchy desktop packages come from the signed Daemonarchy repository.'
+fi
+
+gum style --border normal --padding "1 2" \
+  "Ready to update $product?" "" \
+  "$sources" \
+  "FreeBSD dependencies use the configured FreeBSD package repositories." "" \
+  "Keep the machine connected to power and let the update finish." "" \
+  "What's new: $releases"
+echo
+if ! gum confirm "Update $product?"; then
+  echo "$product update cancelled"
+  exit 1
+fi

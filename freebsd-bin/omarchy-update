@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# omarchy:summary=Update Omarchy and system packages
+# omarchy:summary=Update the desktop and system packages from their configured FreeBSD repositories
 # omarchy:args=[-y]
 # omarchy:examples=omarchy update | omarchy update -y
 # omarchy:requires-sudo=true
@@ -17,7 +17,21 @@ if ! omarchy-update-lock held; then
   exec omarchy-update-lock run "$0" "$@"
 fi
 
-trap 'echo ""; echo -e "\033[0;31mSomething went wrong during the update!\n\nPlease review the output above carefully, correct the error, and retry the update.\n\nIf you need assistance, get help from the community at https://omarchy.org/discord\033[0m"' ERR
+product=Omarchy
+support=https://github.com/jordanhubbard/omarchy-freebsd/issues
+if pkg info -e daemonarchy >/dev/null 2>&1; then
+  product=Daemonarchy
+  support=https://github.com/jordanhubbard/daemonarchy/issues
+fi
+printf '\n%s update\n' "$product"
+if [[ $product == Daemonarchy ]]; then
+  echo 'Desktop updates come from the signed Daemonarchy package repository.'
+  echo 'FreeBSD dependencies come from the configured FreeBSD package repositories.'
+fi
+update_failed() {
+  printf '\n%s update failed. Review the output above and retry.\nHelp: %s\n' "$product" "$support" >&2
+}
+trap update_failed ERR
 trap 'omarchy-update-stay-awake stop' EXIT
 
 omarchy-update-requires-free-space
