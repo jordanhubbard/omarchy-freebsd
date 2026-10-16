@@ -166,12 +166,35 @@ for name in ("setup-agent.hook", "install-voxtype.hook", "setup-fingerprint.hook
     if hook.is_file():
         hook.write_text("#!/bin/sh\n# Unsupported upstream setup is not offered on FreeBSD.\nexit 0\n")
 PYCLI
+  "$PYTHON_CMD" - "$tree" <<'PYBAR'
+import json
+from pathlib import Path
+import sys
+widgets = Path(sys.argv[1]) / "shell/plugins/bar/widgets"
+indicator = widgets / "Indicators.qml"
+if indicator.is_file():
+    text = indicator.read_text()
+    text = text.replace('"Dictation", ', '').replace('"ScreenRecording", ', '')
+    old = 'if (id !== "") result.push(item)'
+    new = 'if (id !== "" && id !== "Dictation" && id !== "ScreenRecording") result.push(item)'
+    if old not in text and new not in text:
+        raise ValueError("Review the upstream indicator settings filter before packaging")
+    indicator.write_text(text.replace(old, new))
+manifest = widgets / "Indicators.manifest.json"
+if manifest.is_file():
+    data = json.loads(manifest.read_text())
+    for setting in data["barWidget"]["schema"]:
+        if setting.get("key") == "items":
+            setting["options"] = [option for option in setting["options"]
+                                  if option.get("value") not in {"Dictation", "ScreenRecording"}]
+    manifest.write_text(json.dumps(data, indent=2) + "\n")
+PYBAR
   # Bindings are also user-facing launch points. Keep useful keys only where
   # this release supplies a native application/action.
   local bindings
   for bindings in "$tree"/default/hypr/bindings/*.lua; do
     [[ -f $bindings ]] || continue
-    sed -i '' -E '/o\.bind.*(omarchy-launch-docker-tui|omarchy-capture-screenrecording|omarchy-capture-webcam-resize|omarchy-menu toggle share|omarchy-agent --pick|omarchy = "(spotify|1password|signal)")/d' "$bindings"
+    sed -i '' -E '/o\.bind.*(omarchy-launch-docker-tui|omarchy-capture-screenrecording|omarchy-capture-webcam-resize|omarchy-menu toggle share|omarchy-agent --pick|voxtype|omarchy = "(spotify|1password|signal)")/d' "$bindings"
     sed -i '' 's/"Omarchy menu"/"Daemonarchy menu"/g' "$bindings"
   done
   if [[ -f $tree/bin/omarchy-default-editor ]]; then

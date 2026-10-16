@@ -2,6 +2,7 @@
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -197,6 +198,34 @@ exit 17
         self.assertIn("trigger.capture.screenshot", entries)
         self.assertNotIn("trigger.tests.network-speedtest", entries)
         self.assertNotIn("trigger.tests.disk-speedtest", entries)
+
+    @unittest.skipUnless(shutil.which("node"), "Node needed to exercise the QML settings functions")
+    def test_bar_excludes_unqualified_indicators_from_defaults_and_existing_settings(self):
+        source = Path(os.environ["OMARCHY_TEST_MENU"]).parents[2] / "shell/plugins/bar/widgets"
+        widgets = self.tree / "shell/plugins/bar/widgets"
+        widgets.mkdir(parents=True)
+        for name in ("Indicators.qml", "Indicators.manifest.json"):
+            shutil.copyfile(source / name, widgets / name)
+        self.adapt()
+        text = (widgets / "Indicators.qml").read_text()
+        defaults = re.search(r'defaultIndicatorEntries:\s*(\[[^\n]+\])', text).group(1)
+        functions = "\n".join(re.search(r'^  function ' + name + r'\(.*?^  }', text,
+                                      re.MULTILINE | re.DOTALL).group(0)
+                              for name in ("entryId", "indicatorEntriesFromSettings"))
+        program = "const assert = require('node:assert/strict');\n"
+        program += "const Util = { isPlainObject: x => x !== null && typeof x === 'object' && !Array.isArray(x) };\n"
+        program += "const defaultIndicatorEntries = " + defaults + ";\n" + functions
+        program += """
+assert.deepEqual(indicatorEntriesFromSettings({}), ['Reminder', 'NightLight', 'Dnd', 'StayAwake']);
+const old = {items: ['Dictation', 'Reminder', {id:'ScreenRecording'}, {id:'NightLight', detail:7}, 'UserPlugin']};
+assert.deepEqual(indicatorEntriesFromSettings(old), ['Reminder', {id:'NightLight', detail:7}, 'UserPlugin']);
+assert.equal(old.items.length, 5);
+assert.deepEqual(indicatorEntriesFromSettings({indicators:['Dictation','ScreenRecording']}), []);
+"""
+        subprocess.run(["node", "-e", program], check=True, capture_output=True, text=True)
+        manifest = json.loads((widgets / "Indicators.manifest.json").read_text())
+        options = next(row["options"] for row in manifest["barWidget"]["schema"] if row["key"] == "items")
+        self.assertEqual({row["value"] for row in options}, {"Reminder", "NightLight", "Dnd", "StayAwake"})
 
     def browser(self, desktop, *args):
         self.command("xdg-settings", 'printf "%s" "$TEST_DESKTOP"\n')
