@@ -62,6 +62,15 @@ printf '%s\\n' "$@"
 exit 23
 ''')
         probe.chmod(0o755)
+        for name in ("vm", "dev-setup"):
+            native = self.tree / ("bin/daemonarchy-" + name)
+            native.write_text(f'#!{shutil.which("bash")}\n' + '''
+# omarchy:summary=Native FreeBSD helper
+# omarchy:args=[values...]
+printf '%s\\n' "$@"
+exit 17
+''')
+            native.chmod(0o755)
         self.adapt()
         command = ["bash", str(self.tree / "bin/daemonarchy")]
         help_result = subprocess.run(command + ["--help"], capture_output=True, text=True)
@@ -80,6 +89,17 @@ exit 23
         result = subprocess.run(command + ["commands", "--json"], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("daemonarchy probe", json.dumps(json.loads(result.stdout)))
+        self.assertIn("daemonarchy vm", result.stdout)
+        for route in (("vm",), ("dev", "setup")):
+            result = subprocess.run(command + list(route) + ["native argument"], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 17, result.stderr)
+            self.assertEqual(result.stdout, "native argument\n")
+            result = subprocess.run(command + list(route) + ["--help"], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("daemonarchy " + " ".join(route), result.stdout)
+        result = subprocess.run(command + ["dev", "--help"], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("daemonarchy dev setup", result.stdout)
 
     def test_linux_docker_entries_removed_and_browser_ids_adapted(self):
         (self.tree / "applications/Docker.desktop").write_text("[Desktop Entry]\nName=Docker\n")

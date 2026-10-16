@@ -36,6 +36,8 @@ class EnterpriseWifi(unittest.TestCase):
                 "-keyout", "client.key", "-out", "client.csr")
         openssl("x509", "-req", "-in", "client.csr", "-CA", "ca.pem", "-CAkey", "ca.key",
                 "-CAcreateserial", "-days", "1", "-out", "client.pem")
+        openssl("pkey", "-in", "client.key", "-aes-256-cbc", "-passout", "pass:fixture-password",
+                "-out", "encrypted.key")
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -66,6 +68,15 @@ class EnterpriseWifi(unittest.TestCase):
         invalid.write_text("not a CA\n")
         with self.assertRaises(ValueError):
             enterprise.validate(dict(self.profile, ca_cert=str(invalid)))
+
+    def test_encrypted_key_requires_the_matching_password(self):
+        profile = dict(self.tls(), private_key=str(self.certs / "encrypted.key"),
+                       private_key_password="fixture-password")
+        rendered = enterprise.render(profile)
+        self.assertIn("private_key_passwd=" + b"fixture-password".hex(), rendered)
+        self.assertNotIn("fixture-password", rendered)
+        with self.assertRaises(ValueError):
+            enterprise.validate(dict(profile, private_key_password="wrong-password"))
 
     def test_hex_fields_cannot_inject_configuration_or_log_password(self):
         rendered = enterprise.render(self.profile)

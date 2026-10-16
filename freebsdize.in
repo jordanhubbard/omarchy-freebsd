@@ -46,9 +46,32 @@ desktop_defaults() {
   # Only its public routes/help use Daemonarchy's name.
   if [[ -f $tree/bin/omarchy ]]; then
     sed -e 's/omarchy /daemonarchy /g' -e 's/Omarchy/Daemonarchy/g' "$tree/bin/omarchy" |
-      awk '{ print } /metadata_value=.*BASH_REMATCH/ {
-        print "      metadata_value=${metadata_value//omarchy /daemonarchy }"
-      }' >"$tree/bin/daemonarchy"
+      awk '
+        /for file in .*\/omarchy-\*; do/ {
+          print "  for file in \"$OMARCHY_BIN_DIR\"/omarchy-* \"$OMARCHY_BIN_DIR\"/daemonarchy-*; do"; next
+        }
+        /for file in .*\/omarchy-\$group.*-\*; do/ {
+          print "  for file in \"$OMARCHY_BIN_DIR/omarchy-$group\"-* \"$OMARCHY_BIN_DIR/daemonarchy-$group\"-*; do"; next
+        }
+        $0 == "  [[ -x $OMARCHY_BIN_DIR/omarchy-$group ]] && return 0" {
+          print "  [[ -x $OMARCHY_BIN_DIR/omarchy-$group || -x $OMARCHY_BIN_DIR/daemonarchy-$group ]] && return 0"; next
+        }
+        /^  if \[\[ -f \$OMARCHY_BIN_DIR\/omarchy-\$group / {
+          print "  if [[ -f $OMARCHY_BIN_DIR/daemonarchy-$group && -x $OMARCHY_BIN_DIR/daemonarchy-$group ]]; then"
+          print "    register_command \"$OMARCHY_BIN_DIR/daemonarchy-$group\""
+          print "  fi"
+        }
+        /^    binary="omarchy-/ {
+          print "    local binary_prefix"
+          print "    for binary_prefix in daemonarchy omarchy; do"
+          sub(/omarchy-/, "$binary_prefix-")
+          direct_loop = 1
+        }
+        direct_loop && $0 == "  done" { print "    done"; direct_loop = 0 }
+        { print }
+        /local stem=.*file_binary#omarchy-/ { print "  stem=${stem#daemonarchy-}" }
+        /metadata_value=.*BASH_REMATCH/ { print "      metadata_value=${metadata_value//omarchy /daemonarchy }" }
+      ' >"$tree/bin/daemonarchy"
     chmod +x "$tree/bin/daemonarchy"
   fi
 }
