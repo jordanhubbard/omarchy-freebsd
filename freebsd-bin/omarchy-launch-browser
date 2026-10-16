@@ -28,7 +28,12 @@ def main(args):
     gi.require_version("GioUnix", "2.0")
     from gi.repository import GioUnix, GLib
 
-    desktop_id = default_browser()
+    webapp = bool(args and args[0] == "--webapp")
+    if webapp:
+        args = args[1:]
+        if len(args) != 1 or not args[0].startswith(("https://", "http://")):
+            raise ValueError("Web apps require one HTTP or HTTPS URL")
+    desktop_id = "chromium-browser.desktop" if webapp else default_browser()
     if (desktop_id.startswith("-") or "/" in desktop_id or "\n" in desktop_id
             or not desktop_id.endswith(".desktop")):
         raise ValueError("Invalid default browser desktop ID")
@@ -37,20 +42,29 @@ def main(args):
     info = GioUnix.DesktopAppInfo.new(desktop_id)
     if info is None:
         raise ValueError(f"Browser application not installed: {desktop_id}")
-    if "--private" in args:
+    if webapp or "--private" in args:
         name = desktop_id.lower()
         flag = ("--private-window" if "firefox" in name or "zen" in name
                 else "--inprivate" if "edge" in name else "--incognito")
         keyfile = GLib.KeyFile()
         keyfile.load_from_file(info.get_filename(), GLib.KeyFileFlags.NONE)
         command = keyfile.get_string("Desktop Entry", "Exec")
-        keyfile.set_string("Desktop Entry", "Exec", command + " " + flag)
+        if webapp:
+            # Desktop Exec has its own quoting and percent-field grammar.
+            # Never interpolate a URL into shell source.
+            url = args[0].replace("%", "%%")
+            for char in ("\\", '"', "`", "$"):
+                url = url.replace(char, "\\" + char)
+            command += ' "--app=' + url + '"'
+        else:
+            command += " " + flag
+        keyfile.set_string("Desktop Entry", "Exec", command)
         # A D-Bus activation would bypass the modified Exec line.
         keyfile.set_boolean("Desktop Entry", "DBusActivatable", False)
         info = GioUnix.DesktopAppInfo.new_from_keyfile(keyfile)
         if info is None:
             raise ValueError("Cannot prepare the private browser launcher")
-    info.launch_uris([arg for arg in args if arg != "--private"], None)
+    info.launch_uris([] if webapp else [arg for arg in args if arg != "--private"], None)
 
 
 if __name__ == "__main__":

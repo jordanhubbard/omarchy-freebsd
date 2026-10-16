@@ -36,7 +36,7 @@ class DesktopDefaults(unittest.TestCase):
         text = (ROOT / name).read_text()
         substitutions = {"DATADIR": str(self.tree), "PREFIX": "/usr/local",
                          "LOCALBASE": "/usr/local", "PREFIX_SHARE": "applications",
-                         "GNU_COREUTILS": "gfind", "PYTHON_CMD": "/usr/local/bin/python3",
+                         "GNU_COREUTILS": "gfind", "PYTHON_CMD": sys.executable,
                          "PERL": "/usr/local/bin/perl"}
         for key, value in substitutions.items():
             text = text.replace(f"%%{key}%%", value)
@@ -119,6 +119,43 @@ exit 17
         self.assertIn("system.reboot", menu.read_text())
         self.assertIn("chromium-browser.desktop", mime.read_text())
 
+    def test_real_upstream_menu_has_native_package_paths(self):
+        source = Path(os.environ["OMARCHY_TEST_MENU"])
+        menu = self.tree / "default/omarchy/omarchy-menu.jsonc"
+        shutil.copyfile(source, menu)
+        # Unknown future upstream apps are excluded until reviewed.
+        (self.tree / "applications/NewLinuxApp.desktop").write_text("[Desktop Entry]\n")
+        unsafe = self.tree / "bin/omarchy-windows-vm"
+        unsafe.write_text("#!/bin/sh\necho should-not-run\n")
+        unsafe.chmod(0o755)
+        shared = self.tree / "bin/omarchy-launch-floating-terminal-with-presentation"
+        shared.write_text("#!/bin/sh\necho native-terminal\n")
+        self.adapt()
+        result = subprocess.run([str(unsafe), "install"], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("not supported on FreeBSD", result.stderr)
+        self.assertNotIn("should-not-run", result.stdout)
+        self.assertIn("native-terminal", shared.read_text())
+        entries = {}
+        for line in menu.read_text().splitlines():
+            if line.strip().startswith('"'):
+                entries.update(json.loads("{" + line.strip().rstrip(",") + "}"))
+        for key, value in entries.items():
+            action = value.get("action", "")
+            self.assertNotIn("omarchy-install-browser", action)
+            self.assertNotIn("omarchy-install-dev-env", action)
+            self.assertNotIn("omarchy-pkg-aur", action)
+            self.assertFalse(key.startswith("update.channel"))
+            self.assertFalse(key.startswith("setup.default.agent"))
+            self.assertNotIn("plymouth", action)
+            self.assertNotIn("cryptsetup", action)
+        self.assertEqual(entries["install.package"]["action"], "uwsm-app -- octopkg")
+        self.assertEqual(entries["remove.package"]["action"], "uwsm-app -- octopkg")
+        self.assertEqual(entries["learn.arch"]["label"], "FreeBSD Handbook")
+        self.assertFalse((self.tree / "applications/NewLinuxApp.desktop").exists())
+        self.assertIn("system.reboot", entries)
+        self.assertIn("trigger.capture.screenshot", entries)
+
     def browser(self, desktop, *args):
         self.command("xdg-settings", 'printf "%s" "$TEST_DESKTOP"\n')
         self.command("xdg-mime", "exit 1\n")
@@ -152,6 +189,15 @@ exit 17
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(Path(self.env["TEST_OUTPUT"]).read_text()),
                          ["--configured=a b", "--private-window"])
+
+    @unittest.skipUnless(sys.platform.startswith("freebsd"), "Native GIO launch test on FreeBSD")
+    def test_webapp_uses_chromium_and_preserves_url(self):
+        url = 'https://example.test/a%20b?x="quoted"&y=$(literal)&z=`literal`'
+        result = self.browser("firefox.desktop", "--webapp", url)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(Path(self.env["TEST_OUTPUT"]).read_text()),
+                         ["--configured=a b", "--app=" + url])
+        self.assertNotEqual(self.browser("", "--webapp", "file:///tmp/a").returncode, 0)
 
     @unittest.skipUnless(sys.platform.startswith("freebsd"), "Native GIO launch test on FreeBSD")
     def test_browser_rejects_invalid_desktop_id(self):

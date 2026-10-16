@@ -1,0 +1,6 @@
+#!/bin/bash
+
+# omarchy:summary=Launch a web app with FreeBSD Chromium
+# omarchy:args=<http-or-https-url>
+
+exec %%PREFIX%%/bin/omarchy-launch-browser --webapp "$@"

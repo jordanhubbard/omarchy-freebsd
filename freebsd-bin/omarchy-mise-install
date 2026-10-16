@@ -3,10 +3,8 @@
 # omarchy:summary=Install a small mise-backed wrapper for a given tool.
 # omarchy:args=<package> [command-name [bin-name]]
 
-# FreeBSD version. The wrappers install their tool on first run. Most go
-# through mise as on Arch, but mise fetches Linux and macOS builds, so tools
-# FreeBSD packages natively come from pkg instead, and tools that only ship for
-# Linux run under the Linuxulator (omarchy-agent-install-linux).
+# FreeBSD wrappers install reviewed native packages on first run. Generic
+# mise downloads and unqualified Linux binaries are not release defaults.
 
 if [[ -z $1 ]]; then
   echo "Usage: omarchy-mise-install <package> [command-name [bin-name]]"
@@ -30,16 +28,17 @@ wrapper=$HOME/.local/bin/$command
 # Tools FreeBSD packages: command -> package. A wrapper is only reached while
 # the package is missing, since /usr/local/bin comes first on PATH.
 declare -A freebsd_packages=(
-  [claude]=claude-code
   [codex]=codex
   [crush]=crush
   [gh]=gh
 )
-# Linux-only tools that run under the Linuxulator.
-declare -A linux_tools=(
-  [cursor-agent]=1
-  [opencode]=1
-)
+# Do not generate a first-run downloader for unqualified Linux binaries.
+case "$command" in
+  claude|cursor-agent|opencode|muse)
+    echo "$command is not qualified for this FreeBSD release; no launcher installed." >&2
+    exit 1
+    ;;
+esac
 
 if [[ -n ${freebsd_packages[$command]:-} ]]; then
   pkg_name=${freebsd_packages[$command]}
@@ -51,44 +50,13 @@ if [[ ! -x %%LOCALBASE%%/bin/$bin ]]; then
   echo "Installing $pkg_name from FreeBSD packages..."
   sudo pkg install -y $pkg_name || exit 1
 fi
-$( [[ $command == claude ]] && echo 'omarchy-agent-install-linux --enable || exit 1' )
 exec %%LOCALBASE%%/bin/$bin "\$@"
 EOF
   chmod +x "$wrapper"
   exit 0
 fi
 
-if [[ -n ${linux_tools[$command]:-} ]]; then
-  rm -f "$wrapper"
-  cat >"$wrapper" <<EOF
-#!%%LOCALBASE%%/bin/bash
-# $command only ships for Linux; it runs under FreeBSD's Linuxulator.
-omarchy-agent-install-linux $command || exit 1
-exec "\${XDG_DATA_HOME:-\$HOME/.local/share}/omarchy/linux-tools/$command/$command" "\$@"
-EOF
-  chmod +x "$wrapper"
-  exit 0
-fi
-
-# Everything else: mise, as on Arch (npm-based tools run natively on FreeBSD).
-printf -v package_arg '%q' "$package"
-printf -v bin_arg '%q' "$bin"
-case "$package" in
-  *'$'* | *'`'* | *'"'* | *'\'* | *'!'* | *[[:cntrl:]]*) ;;
-  *) package_arg="\"$package\"" ;;
-esac
-case "$bin" in
-  *'$'* | *'`'* | *'"'* | *'\'* | *'!'* | *[[:cntrl:]]*) ;;
-  *) bin_arg="\"$bin\"" ;;
-esac
-
-rm -f "$wrapper"
-cat >"$wrapper" <<EOF
-#!%%LOCALBASE%%/bin/bash
-export MISE_MINIMUM_RELEASE_AGE=0
-mise use -g --quiet $package_arg || exit 1
-exec mise x $package_arg -- $bin_arg "\$@"
-EOF
-
-chmod +x "$wrapper"
-mise settings set upgrade.auto_prune false
+# Other tools need a reviewed native package mapping. A generic mise backend
+# can download a Linux executable even when its frontend runs on FreeBSD.
+echo "No reviewed FreeBSD package mapping for $command; use OctoPkg or pkg." >&2
+exit 1

@@ -35,12 +35,83 @@ P='%%'
 
 desktop_defaults() {
   local tree=$1
-  # Docker's Linux daemon is not configured by this desktop. Client tools can
-  # still be used explicitly with a remote engine, but must not imply a local one.
-  rm -f "$tree/applications/Docker.desktop"
+  # Only these upstream application entries have a native launch path. Web
+  # services use Chromium; their names do not imply a Linux desktop binary.
+  local app
+  for app in "$tree"/applications/*.desktop; do
+    [[ -f $app ]] || continue
+    case ${app##*/} in
+      Basecamp.desktop|Discord.desktop|"Disk Usage.desktop"|"Google Contacts.desktop"|"Google Maps.desktop"|"Google Messages.desktop"|"Google Photos.desktop"|HEY.desktop|WhatsApp.desktop|X.desktop|YouTube.desktop|Zoom.desktop|foot.desktop|imv.desktop|mpv.desktop) ;;
+      *) rm -f "$app" ;;
+    esac
+  done
   if [[ -f $tree/default/omarchy/omarchy-menu.jsonc ]]; then
-    sed -i '' -E '/"(install.development.docker-dbs|setup.security.sudoless-docker|remove.security.sudoless-docker)":/d' \
-      "$tree/default/omarchy/omarchy-menu.jsonc"
+    "$PYTHON_CMD" - "$tree/default/omarchy/omarchy-menu.jsonc" <<'PYMENU'
+import json
+import pathlib
+import re
+import sys
+path = pathlib.Path(sys.argv[1])
+# Installation/removal goes through FreeBSD's repository UI. Upstream's
+# individual installers contain more Linux assumptions than package names.
+keep_install = {"install.package", "install.webapp", "install.tui",
+                "install.style", "install.style.theme", "install.style.background"}
+keep_remove = {"remove.package", "remove.webapp", "remove.tui", "remove.theme"}
+unsupported = (
+    "style.unlock", "system.hibernate", "setup.direct-boot", "setup.reset",
+    "setup.security", "setup.network.dns", "setup.network.qr", "setup.default.agent",
+    "trigger.capture.screenrecord", "trigger.toggle.crash-capture",
+    "trigger.hardware.hybrid-gpu", "trigger.hardware.touchpad-haptics",
+    "trigger.share", "update.channel", "update.config.plymouth",
+    "update.firmware", "update.password.drive", "update.hardware",
+    "setup.default.browser.chrome", "setup.default.browser.brave",
+    "setup.default.browser.brave-origin", "setup.default.browser.edge",
+    "setup.default.browser.zen", "setup.default.editor.cursor",
+    "setup.default.editor.sublime",
+)
+rows = []
+blocked_commands = set()
+retained_commands = set()
+for line in path.read_text().splitlines():
+    stripped = line.strip().rstrip(",")
+    if not stripped.startswith('"'):
+        rows.append(line)
+        continue
+    entry = json.loads("{" + stripped + "}")
+    key, value = next(iter(entry.items()))
+    if (key.startswith("install.") and key not in keep_install
+            or key.startswith("remove.") and key not in keep_remove
+            or any(key == prefix or key.startswith(prefix + ".") for prefix in unsupported)):
+        blocked_commands.update(re.findall(r"omarchy-[a-zA-Z0-9-]+", value.get("action", "")))
+        continue
+    retained_commands.update(re.findall(r"omarchy-[a-zA-Z0-9-]+", value.get("action", "")))
+    if key == "learn.arch":
+        value.update(label="FreeBSD Handbook", action="omarchy-launch-browser https://docs.freebsd.org/en/books/handbook/")
+    elif key == "learn.omarchy":
+        value.update(label="Daemonarchy", action="omarchy-launch-browser https://github.com/jordanhubbard/daemonarchy/blob/main/docs/getting-started.md")
+    elif key == "learn.community":
+        value.update(label="Daemonarchy Issues", action="omarchy-launch-browser https://github.com/jordanhubbard/daemonarchy/issues")
+    elif key == "update.omarchy":
+        value["label"] = "Daemonarchy"
+    elif key in {"install.package", "remove.package"}:
+        value.update(icon="󰏖", label="Packages", action="uwsm-app -- octopkg")
+    rows.append("  " + json.dumps(key) + ": " + json.dumps(value, ensure_ascii=False, separators=(",", ":")) + ",")
+path.write_text("\n".join(rows) + "\n")
+# Keep packaged filenames for compatibility but hide unsupported CLI routes and
+# fail before touching services, disks or downloading Linux software.
+bin_dir = path.parents[2] / "bin"
+for name in blocked_commands - retained_commands:
+    if name.startswith("omarchy-launch-") or not (bin_dir / name).is_file():
+        continue
+    (bin_dir / name).write_text(
+        "#!/bin/sh\n# omarchy:hidden=true\n"
+        "printf '%s\\n' 'This upstream action is not supported on FreeBSD. Use Daemonarchy Packages or native FreeBSD tools.' >&2\n"
+        "exit 1\n")
+PYMENU
+  fi
+  # First-run setup must not regenerate Linux downloader wrappers.
+  if [[ -f $tree/install/user/mise.sh ]]; then
+    printf '%s\n' 'omarchy-mise-install codex' 'omarchy-mise-install crush' 'omarchy-mise-install gh' >"$tree/install/user/mise.sh"
   fi
   # Keep the metadata format and omarchy-* binaries the router discovers.
   # Only its public routes/help use Daemonarchy's name.
