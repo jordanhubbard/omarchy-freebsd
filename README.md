@@ -26,6 +26,15 @@ metadata and internal `omarchy-*` binaries. `daemonarchy version` reports the
 installed Daemonarchy package version. The upstream router stays available
 for compatibility.
 
+`daemonarchy wifi enterprise 'Network name'` configures PEAP/MSCHAPv2 or
+EAP-TLS using a trusted CA and authentication-server DNS domain. The desktop
+panel opens that form for unfamiliar enterprise networks. Passwords travel
+through stdin and the private supplicant socket; certificate imports and
+profile files are root-only. The same helper validates and transfers the live
+installer's enterprise profile to the target. Native profile/parser and
+rollback tests are included; real access-point/EAP and reboot qualification
+remain separate acceptance requirements.
+
 The FreeBSD browser launcher uses XDG desktop application lookup, including
 `/usr/local/share/applications`, and defaults to `chromium-browser.desktop`.
 First-session setup supplies missing MIME defaults without overwriting user

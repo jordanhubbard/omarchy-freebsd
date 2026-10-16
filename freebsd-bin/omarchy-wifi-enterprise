@@ -1,0 +1,342 @@
+#!/usr/bin/env python3
+
+# omarchy:summary=Join certificate-validated enterprise Wi-Fi
+# omarchy:args=[ssid]
+# omarchy:group=wifi
+# omarchy:name=enterprise
+
+import fcntl
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import socket
+import ssl
+import stat
+import subprocess
+import sys
+import tempfile
+import time
+
+CERT_FIELDS = {"ca_cert": "ca.pem", "client_cert": "client.pem", "private_key": "client.key"}
+FIELDS = {"schema", "ssid", "method", "identity", "anonymous_identity", "password",
+          "domain_suffix_match", "ca_cert", "client_cert", "private_key", "private_key_password", "hidden"}
+
+
+def validate(profile):
+    if (not isinstance(profile, dict) or set(profile) - FIELDS
+            or type(profile.get("schema")) is not int or profile["schema"] != 1):
+        raise ValueError("Invalid enterprise profile schema")
+    for field, value in profile.items():
+        if field in ("schema", "hidden"):
+            continue
+        if not isinstance(value, str) or len(value) > 4096 or any(ord(c) < 32 or ord(c) == 127 for c in value):
+            raise ValueError(f"Invalid enterprise profile field: {field}")
+    if not 1 <= len(profile.get("ssid", "").encode()) <= 32:
+        raise ValueError("The network name must contain 1 to 32 UTF-8 bytes")
+    if not profile.get("identity"):
+        raise ValueError("An enterprise identity is required")
+    domain = profile.get("domain_suffix_match", "")
+    if (not 1 <= len(domain) <= 253 or not all(
+            re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?", label)
+            for label in domain.split("."))):
+        raise ValueError("A valid authentication-server DNS domain is required")
+    if profile.get("method") not in ("peap", "tls"):
+        raise ValueError("Choose PEAP/MSCHAPv2 or EAP-TLS")
+    if not isinstance(profile.get("hidden", False), bool):
+        raise ValueError("hidden must be true or false")
+    required = ("ca_cert",) if profile["method"] == "peap" else tuple(CERT_FIELDS)
+    for field in required:
+        path = Path(profile.get(field, ""))
+        if not path.is_absolute() or not path.is_file() or not 0 < path.stat().st_size <= 2 * 1024 * 1024:
+            raise ValueError(f"A readable PEM file is required: {field}")
+    if profile["method"] == "peap" and not profile.get("password"):
+        raise ValueError("A PEAP password is required")
+    try:
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        context.load_verify_locations(cafile=profile["ca_cert"])
+        if profile["method"] == "tls":
+            context.load_cert_chain(profile["client_cert"], profile["private_key"],
+                                    password=lambda: profile.get("private_key_password", ""))
+    except (OSError, ssl.SSLError, ValueError) as error:
+        raise ValueError("Cannot load the CA or matching client certificate/private key") from error
+    return profile
+
+
+def network_fields(profile):
+    validate(profile)
+    values = [("ssid", profile["ssid"].encode().hex()), ("key_mgmt", "WPA-EAP"),
+              ("eap", profile["method"].upper())]
+    strings = {"identity": profile["identity"], "ca_cert": profile["ca_cert"],
+               "domain_suffix_match": profile["domain_suffix_match"],
+               "phase1": "tls_disable_tlsv1_0=1 tls_disable_tlsv1_1=1"}
+    if profile["method"] == "peap":
+        strings.update(password=profile["password"], phase2="auth=MSCHAPV2")
+        if profile.get("anonymous_identity"):
+            strings["anonymous_identity"] = profile["anonymous_identity"]
+    else:
+        strings.update(client_cert=profile["client_cert"], private_key=profile["private_key"])
+        if profile.get("private_key_password"):
+            strings["private_key_passwd"] = profile["private_key_password"]
+    values.extend((key, value.encode().hex()) for key, value in strings.items())
+    if profile.get("hidden"):
+        values.append(("scan_ssid", "1"))
+    return values
+
+
+def render(profile, target_root=None):
+    values = network_fields(profile)
+    if target_root is not None:
+        root = Path(target_root)
+        values = [(key, ("/" + str(Path(profile[key]).relative_to(root))).encode().hex())
+                  if key in CERT_FIELDS and key in profile else (key, value)
+                  for key, value in values]
+    return ("ctrl_interface=DIR=/var/run/wpa_supplicant GROUP=wheel\nupdate_config=1\nnetwork={\n"
+            + "".join(f"\t{key}={value}\n" for key, value in values) + "}\n")
+
+
+def atomic_write(path, contents):
+    path = Path(path)
+    fd, temporary = tempfile.mkstemp(prefix=".daemonarchy-", dir=path.parent)
+    try:
+        with os.fdopen(fd, "wb") as output:
+            os.fchmod(output.fileno(), 0o600)
+            output.write(contents)
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def stage(profile, parent):
+    validate(profile)
+    parent = Path(parent)
+    parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if parent.is_symlink():
+        raise ValueError("Refusing a symbolic link for enterprise credentials")
+    os.chmod(parent, 0o700)
+    directory = Path(tempfile.mkdtemp(prefix="network-", dir=parent))
+    result = dict(profile)
+    try:
+        for field, name in CERT_FIELDS.items():
+            if field == "ca_cert" or profile["method"] == "tls":
+                destination = directory / name
+                with open(profile[field], "rb") as source, open(destination, "xb") as output:
+                    os.chmod(destination, 0o600)
+                    material = source.read(2 * 1024 * 1024 + 1)
+                    if len(material) > 2 * 1024 * 1024:
+                        raise ValueError("Certificate material changed or exceeds the size limit")
+                    output.write(material)
+                result[field] = str(destination)
+        validate(result)
+        return result, directory
+    except BaseException:
+        shutil.rmtree(directory)
+        raise
+
+
+class Control:
+    def __init__(self, interface, control_dir=Path("/var/run/wpa_supplicant"), client_dir="/var/run"):
+        if not re.fullmatch(r"wlan[0-9]+", interface):
+            raise ValueError("Invalid wireless interface")
+        self.directory = tempfile.TemporaryDirectory(prefix="daemonarchy-wpa-", dir=client_dir)
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        self.sock.settimeout(5)
+        try:
+            self.sock.bind(str(Path(self.directory.name) / "control"))
+            self.sock.connect(str(Path(control_dir) / interface))
+        except BaseException:
+            self.close()
+            raise
+
+    def close(self):
+        self.sock.close()
+        self.directory.cleanup()
+
+    def request(self, command):
+        self.sock.send(command.encode())
+        response = self.sock.recv(65536).decode().strip()
+        if response.startswith(("FAIL", "UNKNOWN")):
+            raise RuntimeError("The Wi-Fi service rejected " + command.split(" ", 1)[0])
+        return response
+
+    def status(self):
+        return dict(line.split("=", 1) for line in self.request("STATUS").splitlines() if "=" in line)
+
+    def await_connection(self, network_id=None):
+        deadline = time.monotonic() + 45
+        while time.monotonic() < deadline:
+            state = self.status()
+            if state.get("wpa_state") == "COMPLETED" and (network_id is None or state.get("id") == network_id):
+                return
+            time.sleep(0.5)
+        raise RuntimeError("Enterprise authentication did not complete; check the CA, server domain and credentials")
+
+
+def same_ssid(value, ssid):
+    if value.startswith('"') and value.endswith('"'):
+        return value[1:-1].encode() == ssid.encode()
+    try:
+        return bytes.fromhex(value) == ssid.encode()
+    except ValueError:
+        return False
+
+
+def apply(profile, interface, root=Path("/"), control_factory=Control):
+    validate(profile)
+    config = root / "etc/wpa_supplicant.conf"
+    if config.is_symlink() or not config.is_file():
+        raise ValueError("Turn Wi-Fi on before configuring an enterprise network")
+    original = config.read_bytes()
+    staged, directory = stage(profile, root / "etc/wpa_supplicant/enterprise")
+    control = None
+    saved = False
+    try:
+        control = control_factory(interface)
+        old_ids = []
+        for row in control.request("LIST_NETWORKS").splitlines()[1:]:
+            candidate = row.split("\t", 1)[0]
+            if candidate.isdecimal() and same_ssid(control.request(f"GET_NETWORK {candidate} ssid"), profile["ssid"]):
+                old_ids.append(candidate)
+        network_id = control.request("ADD_NETWORK")
+        if not network_id.isdecimal():
+            raise RuntimeError("The Wi-Fi service did not allocate a profile")
+        for field, value in network_fields(staged):
+            control.request(f"SET_NETWORK {network_id} {field} {value}")
+        control.request(f"SELECT_NETWORK {network_id}")
+        control.await_connection(network_id)
+        for old_id in old_ids:
+            control.request(f"REMOVE_NETWORK {old_id}")
+        os.chmod(config, 0o600)
+        saved = True  # SAVE_CONFIG may have changed the file even on error.
+        control.request("SAVE_CONFIG")
+        os.chmod(config, 0o600)
+    except BaseException:
+        if saved:
+            atomic_write(config, original)
+        if control is not None:
+            try:
+                control.request("RECONFIGURE")
+            except (OSError, RuntimeError):
+                # A partially saved configuration may still reference these files.
+                # Retain credentials rather than breaking recovery on another error.
+                raise RuntimeError("Cannot restore Wi-Fi state; credentials retained for recovery") from None
+        shutil.rmtree(directory)
+        raise
+    finally:
+        if control is not None:
+            control.close()
+
+
+def prompt(ssid=None, hidden=False):
+    def form(label, secret=False, optional=False):
+        command = ["gum", "input", "--prompt", label + "> "]
+        if secret:
+            command.append("--password")
+        result = subprocess.run(command, capture_output=True, text=True, check=True).stdout.rstrip("\n")
+        if not optional and not result:
+            raise ValueError(f"{label} is required")
+        return result
+
+    method = subprocess.run(["gum", "choose", "--header", "Enterprise Wi-Fi authentication",
+                             "PEAP/MSCHAPv2", "EAP-TLS"], capture_output=True, text=True, check=True).stdout.strip()
+    profile = {"schema": 1, "ssid": ssid or form("Network name"),
+               "method": "peap" if method == "PEAP/MSCHAPv2" else "tls",
+               "identity": form("Identity"), "ca_cert": str(Path(form("CA certificate PEM path")).expanduser().resolve(strict=True)),
+               "domain_suffix_match": form("Authentication-server DNS domain"), "hidden": hidden}
+    if profile["method"] == "peap":
+        profile["anonymous_identity"] = form("Anonymous identity (optional)", optional=True)
+        profile["password"] = form("Password", secret=True)
+    else:
+        profile["client_cert"] = str(Path(form("Client certificate PEM path")).expanduser().resolve(strict=True))
+        profile["private_key"] = str(Path(form("Private key PEM path")).expanduser().resolve(strict=True))
+        profile["private_key_password"] = form("Private key password (optional)", secret=True, optional=True)
+    return validate(profile)
+
+
+def live(profile, interface):
+    validate(profile)
+    directory = Path(tempfile.mkdtemp(prefix="daemonarchy-enterprise-", dir="/tmp"))
+    staged, _ = stage(profile, directory / "certificates")
+    config = directory / "wpa_supplicant.conf"
+    atomic_write(config, render(staged).encode())
+    try:
+        old = Control(interface)
+    except OSError:
+        old = None
+    if old is not None:
+        try:
+            old.request("TERMINATE")
+        finally:
+            old.close()
+        deadline = time.monotonic() + 5
+        while Path("/var/run/wpa_supplicant", interface).exists() and time.monotonic() < deadline:
+            time.sleep(0.1)
+    subprocess.run(["/usr/sbin/wpa_supplicant", "-B", "-i", interface, "-c", str(config)],
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15, check=True)
+    control = Control(interface)
+    try:
+        control.await_connection()
+    finally:
+        control.close()
+    subprocess.run(["/sbin/dhclient", interface], stdout=subprocess.DEVNULL,
+                   stderr=subprocess.DEVNULL, timeout=45, check=True)
+    atomic_write("/tmp/daemonarchy-enterprise-profile.json", json.dumps(staged).encode())
+
+
+def load_file(path):
+    path = Path(path)
+    if path.is_symlink() or not stat.S_ISREG(path.stat().st_mode) or path.stat().st_mode & 0o077:
+        raise ValueError("Enterprise profile files must be private regular files (mode 0600)")
+    if path.stat().st_size > 65536:
+        raise ValueError("Enterprise profile is too large")
+    return validate(json.loads(path.read_text()))
+
+
+def main(args):
+    if args[:1] == ["--validate"] and len(args) == 2:
+        load_file(args[1])
+    elif args[:1] == ["--install"] and len(args) == 3:
+        if os.geteuid() != 0:
+            raise PermissionError("Installing enterprise credentials requires root")
+        profile = load_file(args[2])
+        target = Path(args[1]).resolve()
+        if target == Path("/") or not (target / "etc").is_dir():
+            raise ValueError("Expected a mounted installation target")
+        staged, _ = stage(profile, target / "etc/wpa_supplicant/enterprise")
+        atomic_write(target / "etc/wpa_supplicant.conf", render(staged, target).encode())
+    elif args[:1] == ["--apply"] and len(args) == 2:
+        if os.geteuid() != 0:
+            raise PermissionError("Changing Wi-Fi profiles requires root")
+        encoded = sys.stdin.read(65537)
+        if len(encoded) > 65536:
+            raise ValueError("Enterprise profile is too large")
+        profile = validate(json.loads(encoded))
+        with open("/var/run/daemonarchy-enterprise.lock", "a") as lock:
+            os.chmod(lock.name, 0o600)
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            apply(profile, args[1])
+    elif args[:1] == ["--live"] and len(args) in (2, 3, 4):
+        if os.geteuid() != 0 or not re.fullmatch(r"wlan[0-9]+", args[1]):
+            raise PermissionError("Live Wi-Fi setup requires root and a wireless interface")
+        if len(args) == 4 and args[3] != "--hidden":
+            raise ValueError("Invalid live Wi-Fi option")
+        live(prompt(args[2] if len(args) >= 3 else None, hidden=len(args) == 4), args[1])
+    elif (len(args) <= 1 and (not args or not args[0].startswith("-"))) or (args[:1] == ["--ssid"] and len(args) == 2):
+        profile = prompt(args[1] if len(args) == 2 else args[0] if args else None)
+        subprocess.run(["pkexec", "%%PREFIX%%/bin/omarchy-wifi", "enterprise-apply"],
+                       input=json.dumps(profile), text=True, check=True)
+    else:
+        raise ValueError("Usage: daemonarchy wifi enterprise [ssid]")
+
+
+if __name__ == "__main__":
+    try:
+        main(sys.argv[1:])
+    except (KeyboardInterrupt, subprocess.CalledProcessError):
+        print("Enterprise Wi-Fi setup did not complete", file=sys.stderr)
+        sys.exit(1)
+    except Exception as error:
+        print(f"Enterprise Wi-Fi: {error}", file=sys.stderr)
+        sys.exit(1)

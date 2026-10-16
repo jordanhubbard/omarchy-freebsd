@@ -191,6 +191,14 @@ radio() {
 }
 
 case ${1:-} in
+  enterprise-apply)
+    if ((EUID != 0)); then
+      exec pkexec "%%PREFIX%%/bin/omarchy-wifi" enterprise-apply
+    fi
+    iface=$(wlan_iface)
+    wpa_ready || { echo 'Turn Wi-Fi on before configuring an enterprise network' >&2; exit 1; }
+    exec "%%PREFIX%%/bin/omarchy-wifi-enterprise" --apply "$iface"
+    ;;
   status) json_status ;;
   networks) json_networks ;;
   scan)
