@@ -33,8 +33,29 @@ OVERRIDES_DIR=$DATADIR/freebsd/bin
 # port's own substitution of this file leaves them alone.
 P='%%'
 
+desktop_defaults() {
+  local tree=$1
+  # Docker's Linux daemon is not configured by this desktop. Client tools can
+  # still be used explicitly with a remote engine, but must not imply a local one.
+  rm -f "$tree/applications/Docker.desktop"
+  if [[ -f $tree/default/omarchy/omarchy-menu.jsonc ]]; then
+    sed -i '' -E '/"(install.development.docker-dbs|setup.security.sudoless-docker|remove.security.sudoless-docker)":/d' \
+      "$tree/default/omarchy/omarchy-menu.jsonc"
+  fi
+  # Keep the metadata format and omarchy-* binaries the router discovers.
+  # Only its public routes/help use Daemonarchy's name.
+  if [[ -f $tree/bin/omarchy ]]; then
+    sed -e 's/omarchy /daemonarchy /g' -e 's/Omarchy/Daemonarchy/g' "$tree/bin/omarchy" |
+      awk '{ print } /metadata_value=.*BASH_REMATCH/ {
+        print "      metadata_value=${metadata_value//omarchy /daemonarchy }"
+      }' >"$tree/bin/daemonarchy"
+    chmod +x "$tree/bin/daemonarchy"
+  fi
+}
+
 rewrite() {
   local tree=$1 d dirs=()
+  desktop_defaults "$tree"
   for d in bin "${DATA_DIRS[@]}" etc; do
     [[ -d $tree/$d ]] && dirs+=("$tree/$d")
   done

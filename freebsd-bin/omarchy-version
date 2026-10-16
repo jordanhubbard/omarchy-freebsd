@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# omarchy:summary=Print the installed Omarchy version
+# omarchy:summary=Print the installed desktop version
 
 omarchy_path=${OMARCHY_PATH:-%%DATADIR%%}
 omarchy_path=${omarchy_path%/}
@@ -15,6 +15,6 @@ if [[ $omarchy_path != "%%DATADIR%%" ]]; then
   exit 0
 fi
 
-version=$(pkg query '%v' omarchy 2>/dev/null)
+version=$(pkg query '%v' daemonarchy 2>/dev/null || pkg query '%v' omarchy 2>/dev/null)
 [[ -n $version ]] || exit 1
 echo "$version"

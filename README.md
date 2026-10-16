@@ -18,3 +18,20 @@ Files carry `%%PREFIX%%`, `%%LOCALBASE%%` and `%%DATADIR%%` placeholders, which 
 Releases use [semantic versioning](https://semver.org) on their own; the port records which Omarchy release each one is for.
 
 This is not an official Omarchy project.
+
+Daemonarchy installations expose `daemonarchy` as the desktop command center
+(`daemonarchy --help`, `daemonarchy commands`, `daemonarchy update`). Its
+routes and help use Daemonarchy's name while retaining the upstream command
+metadata and internal `omarchy-*` binaries. `daemonarchy version` reports the
+installed Daemonarchy package version. The upstream router stays available
+for compatibility.
+
+The FreeBSD browser launcher uses XDG desktop application lookup, including
+`/usr/local/share/applications`, and defaults to `chromium-browser.desktop`.
+First-session setup supplies missing MIME defaults without overwriting user
+choices. The stock local-Docker launcher and Docker setup menu entries are
+omitted: this desktop configures neither a Docker VM nor a remote engine.
+
+For desktop policy tests, set `OMARCHY_TEST_ROUTER` to Omarchy's upstream
+`bin/omarchy` (or use the installed `/usr/local/bin/omarchy`) and run
+`python3 -m unittest discover -s tests -v`.

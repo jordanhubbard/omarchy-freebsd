@@ -13,6 +13,19 @@ set -e
 skel="%%DATADIR%%/skel"
 marker="$HOME/.local/state/omarchy/freebsd-seeded"
 
+# Repair the defaults that older packages omitted, including already-seeded
+# accounts. Preserve a user's selected handlers and custom remote-Docker launchers.
+mimeapps="$HOME/.config/mimeapps.list"
+if [[ ! -e $mimeapps && -f %%DATADIR%%/default/applications/mimeapps.list ]]; then
+  mkdir -p "$HOME/.config"
+  cp -n "%%DATADIR%%/default/applications/mimeapps.list" "$mimeapps"
+fi
+docker_launcher="$HOME/.local/share/applications/Docker.desktop"
+if [[ -f $docker_launcher ]] &&
+  grep -qx 'Exec=xdg-terminal-exec --app-id=TUI.tile -e omarchy-launch-docker-tui' "$docker_launcher"; then
+  rm -f "$docker_launcher"
+fi
+
 [[ ${1:-} == --force ]] || [[ ! -e $marker ]] || exit 0
 
 # A Hyprland started before Omarchy was set up writes its own example config;
