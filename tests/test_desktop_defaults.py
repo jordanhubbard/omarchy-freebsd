@@ -128,6 +128,12 @@ exit 17
         unsafe = self.tree / "bin/omarchy-windows-vm"
         unsafe.write_text("#!/bin/sh\necho should-not-run\n")
         unsafe.chmod(0o755)
+        linux_probes = ("omarchy-network-band", "omarchy-network-speedtest", "omarchy-disk-speedtest",
+                        "omarchy-network-password")
+        for name in linux_probes:
+            path = self.tree / "bin" / name
+            path.write_text("#!/bin/sh\necho should-not-run\n")
+            path.chmod(0o755)
         shared = self.tree / "bin/omarchy-launch-floating-terminal-with-presentation"
         shared.write_text("#!/bin/sh\necho native-terminal\n")
         bindings = self.tree / "default/hypr/bindings"
@@ -142,6 +148,11 @@ exit 17
         self.assertEqual(result.returncode, 1)
         self.assertIn("not supported on FreeBSD", result.stderr)
         self.assertNotIn("should-not-run", result.stdout)
+        for name in linux_probes:
+            result = subprocess.run([str(self.tree / "bin" / name)], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("not supported on FreeBSD", result.stderr)
+            self.assertNotIn("should-not-run", result.stdout)
         self.assertIn("native-terminal", shared.read_text())
         entries = {}
         for line in menu.read_text().splitlines():
@@ -164,6 +175,8 @@ exit 17
         self.assertIn("zedit", entries["setup.default.editor.zed"]["when"])
         self.assertIn("system.reboot", entries)
         self.assertIn("trigger.capture.screenshot", entries)
+        self.assertNotIn("trigger.tests.network-speedtest", entries)
+        self.assertNotIn("trigger.tests.disk-speedtest", entries)
 
     def browser(self, desktop, *args):
         self.command("xdg-settings", 'printf "%s" "$TEST_DESKTOP"\n')

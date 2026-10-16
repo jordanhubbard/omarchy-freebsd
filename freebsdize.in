@@ -68,9 +68,12 @@ unsupported = (
     "setup.default.browser.brave-origin", "setup.default.browser.edge",
     "setup.default.browser.zen", "setup.default.editor.cursor",
     "setup.default.editor.sublime",
+    "trigger.tests.network-speedtest", "trigger.tests.disk-speedtest",
 )
 rows = []
-blocked_commands = set()
+blocked_commands = {"omarchy-dns", "omarchy-network-band", "omarchy-network-qr",
+                    "omarchy-network-password", "omarchy-network-speedtest",
+                    "omarchy-disk-speedtest"}
 retained_commands = set()
 for line in path.read_text().splitlines():
     stripped = line.strip().rstrip(",")
