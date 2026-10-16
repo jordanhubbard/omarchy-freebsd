@@ -7,7 +7,8 @@
 
 # FreeBSD has no BlueZ. Its own stack (ng_ubt and ng_hci, hccontrol(8),
 # hcsecd(8) for link keys and PINs, bthidd(8) for keyboards and mice) covers
-# input devices in this backend. Audio needs separate virtual_oss integration.
+# input devices in this backend. A2DP/SBC playback uses base virtual_oss with
+# the native Bluetooth backend and a user-session PipeWire OSS adapter.
 # Changing anything needs root,
 # asked for with pkexec, which Omarchy's polkit rule grants an active local
 # wheel session without a password, as BlueZ and NetworkManager do on Arch.
@@ -21,6 +22,99 @@ RUN_DIR=/var/run/omarchy-bluetooth
 HCSECD_CONF=/etc/bluetooth/hcsecd.conf
 BTHIDD_CONF=/etc/bluetooth/bthidd.conf
 SELF=%%PREFIX%%/bin/omarchy-bluetooth
+
+audio_stop() {
+  if [[ -f $RUN_DIR/audio.pid ]]; then
+    pkill -TERM -F "$RUN_DIR/audio.pid" -x virtual_oss 2>/dev/null || true
+    local i
+    for ((i=0; i<50; i++)); do
+      [[ -e /dev/dsp.daemonarchy_bt ]] || break
+      sleep .1
+    done
+  fi
+  if [[ -c /dev/dsp.daemonarchy_bt ]]; then
+    echo 'Bluetooth audio did not stop; its process and state were retained for diagnosis.' >&2
+    return 1
+  fi
+  rm -f "$RUN_DIR/audio-address" "$STATE_DIR/audio-output"
+}
+
+audio_start() {
+  local addr=$1 i
+  [[ -r %%PREFIX%%/lib/virtual_oss/voss_bt.so ]] || {
+    echo 'Bluetooth audio requires the native virtual_oss_bluetooth package.' >&2
+    return 1
+  }
+  if [[ $(cat "$RUN_DIR/audio-address" 2>/dev/null) == "$addr" &&
+        -c /dev/dsp.daemonarchy_bt ]]; then
+    return 0
+  fi
+  audio_stop || return
+  mkdir -p "$RUN_DIR" "$STATE_DIR"
+  chmod 0755 "$RUN_DIR" "$STATE_DIR"
+  touch "$RUN_DIR/audio.log"
+  chmod 0600 "$RUN_DIR/audio.log"
+  # Keep diagnostics private; no microphone capture or shared /dev/dsp alias.
+  (umask 077; daemon -f -p "$RUN_DIR/audio.pid" -o "$RUN_DIR/audio.log" \
+    /usr/sbin/virtual_oss -C 2 -c 2 -r 48000 -b 16 -s 20ms \
+    -R /dev/null -P "/dev/bluetooth/$addr" -d dsp.daemonarchy_bt) || return 1
+  for ((i=0; i<50; i++)); do
+    if [[ -c /dev/dsp.daemonarchy_bt ]]; then
+      printf '%s\n' "$addr" >"$RUN_DIR/audio-address"
+      printf '%s\n' "$addr" >"$STATE_DIR/audio-output"
+      chmod 0644 "$RUN_DIR/audio-address" "$STATE_DIR/audio-output"
+      return 0
+    fi
+    sleep .1
+  done
+  audio_stop || return
+  echo 'Bluetooth audio could not start; see the root-only Bluetooth audio log.' >&2
+  return 1
+}
+
+audio_node_ids() {
+  timeout 8 pw-dump | jq -r '.[] | select(.type == "PipeWire:Interface:Node" and
+    .info.props["node.name"] == "daemonarchy.bluetooth") | .id'
+}
+
+audio_unroute() {
+  local addr=${1:-} id
+  [[ -r $RUN_DIR/audio-address ]] || return 0
+  [[ -z $addr || $(cat "$RUN_DIR/audio-address") == "$addr" ]] || return 0
+  while read -r id; do
+    [[ $id =~ ^[0-9]+$ ]] || continue
+    timeout 8 pw-cli destroy "$id" || return
+  done < <(audio_node_ids)
+}
+
+audio_route() {
+  local addr=$1 select_output=${2:-true} properties i
+  [[ $(cat "$RUN_DIR/audio-address" 2>/dev/null) == "$addr" ]] || return 0
+  # Root starts the OSS backend; the desktop account owns its PipeWire node.
+  ((EUID != 0)) || return 0
+  for ((i=0; i<30; i++)); do
+    timeout 2 pactl info >/dev/null 2>&1 && break
+    sleep .2
+  done
+  if [[ -z $(audio_node_ids) ]]; then
+    properties=$(jq -cn '{"factory.name":"freebsd-oss.sink",
+      "api.freebsd-oss.dsp-path":"/dev/dsp.daemonarchy_bt",
+      "node.name":"daemonarchy.bluetooth", "node.description":"Bluetooth audio (A2DP)",
+      "media.class":"Audio/Sink", "object.linger":true,
+      "audio.channels":2, "audio.position":["FL","FR"]}')
+    timeout 8 pw-cli create-node adapter "$properties" || return
+  fi
+  for ((i=0; i<30; i++)); do
+    if $select_output; then
+      timeout 2 pactl set-default-sink daemonarchy.bluetooth 2>/dev/null && return 0
+    else
+      timeout 2 pactl list short sinks | awk '$2 == "daemonarchy.bluetooth" { found=1 } END { exit !found }' && return 0
+    fi
+    sleep .2
+  done
+  echo 'The Bluetooth audio device started, but the desktop audio output is unavailable.' >&2
+  return 1
+}
 
 # The first HCI node, ubt0hci on a machine with one controller.
 hci_node() {
@@ -161,8 +255,19 @@ pair() {
 
 connect() {
   node=$(hci_node) || exit 1
-  hcc create_connection "$1" >/dev/null 2>&1
+  if ! hcc create_connection "$1" >/dev/null 2>&1; then
+    # Reconnecting an existing ACL link is normal; other failures are not success.
+    if ! hcc read_connection_list 2>/dev/null | awk -v a="$1" \
+        'tolower($1) == tolower(a) { found=1 } END { exit !found }'; then
+      echo 'Could not establish the Bluetooth connection.' >&2
+      return 1
+    fi
+  fi
   service bthidd status >/dev/null 2>&1 || service bthidd start >/dev/null 2>&1
+  # A2DP Audio Sink UUID. A HID-only device must keep its existing path.
+  if timeout 8 sdpcontrol -a "$1" search 110b 2>/dev/null | grep -q '(0x110b)'; then
+    audio_start "$1" || return
+  fi
   record_state
 }
 
@@ -171,6 +276,7 @@ disconnect() {
   node=$(hci_node) || exit 1
   handle=$(hcc read_connection_list 2>/dev/null | awk -v a="$1" 'tolower($1) == tolower(a) { print $2; exit }')
   [[ -n $handle ]] && hcc disconnect "$handle" >/dev/null 2>&1
+  if [[ $(cat "$RUN_DIR/audio-address" 2>/dev/null) == "$1" ]]; then audio_stop || return; fi
   record_state
 }
 
@@ -196,6 +302,7 @@ power() {
       done
       ;;
     off)
+      audio_stop || return
       for dev in $(ngctl list 2>/dev/null | awk '$2 ~ /^ubt[0-9]+:$/ { sub(/:$/, "", $2); print $2 }'); do
         service bluetooth stop "$dev" >/dev/null 2>&1
       done
@@ -219,13 +326,30 @@ case ${1:-} in
   power)
     [[ ${2:-} == is-on ]] && { power is-on; exit; }
     [[ ${2:-} == on || ${2:-} == off ]] || { echo "Usage: omarchy-bluetooth power <on|off|is-on>" >&2; exit 1; }
+    if [[ $2 == off ]] && ((EUID != 0)); then audio_unroute || exit; fi
     require_root power "$2"
     power "$2"
     ;;
-  pair | connect | disconnect | forget)
+  connect)
     valid_address "${2:-}"
-    require_root "$1" "$2"
-    "$1" "$2"
+    address=${2^^}
+    if ((EUID == 0)); then
+      connect "$address"
+    else
+      as_root connect "$address" && audio_route "$address"
+    fi
+    ;;
+  restore-audio)
+    address=$(cat "$STATE_DIR/audio-output" 2>/dev/null) || exit 0
+    valid_address "$address"
+    if ((EUID == 0)); then connect "$address"; else as_root connect "$address" && audio_route "$address" false; fi
+    ;;
+  pair | disconnect | forget)
+    valid_address "${2:-}"
+    address=${2^^}
+    if [[ $1 != pair ]] && ((EUID != 0)); then audio_unroute "$address" || exit; fi
+    require_root "$1" "$address"
+    "$1" "$address"
     ;;
   *)
     echo "Usage: omarchy-bluetooth status | devices | discover | power <on|off|is-on> | <pair|connect|disconnect|forget> <address>" >&2

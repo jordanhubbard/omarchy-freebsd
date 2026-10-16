@@ -5,6 +5,10 @@
 # monitor gives every device the same priority, so it would otherwise take the
 # first one, often an HDMI output. A default the user has picked is kept.
 
+# Restore a previously selected A2DP output after the user audio service starts.
+# Failures remain visible through the Bluetooth panel's manual reconnect action.
+%%PREFIX%%/bin/omarchy-bluetooth restore-audio || true
+
 state=${XDG_STATE_HOME:-$HOME/.local/state}/wireplumber/default-nodes
 if [[ -r $state ]] && grep -q '^default\.configured\.audio\.sink=' "$state"; then
   exit 0

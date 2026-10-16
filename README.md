@@ -19,6 +19,30 @@ Releases use [semantic versioning](https://semver.org) on their own; the port re
 
 This is not an official Omarchy project.
 
+## Bluetooth audio development
+
+The native Bluetooth backend detects the A2DP Audio Sink service and starts
+FreeBSD's base `virtual_oss` with `audio/virtual_oss_bluetooth`. The desktop
+account creates a PipeWire OSS adapter named `daemonarchy.bluetooth`, which
+appears in the normal audio output selector. Connecting selects it; disconnect,
+forget and power-off remove it. The last connected backend is restored at
+login without overriding a different saved output choice. HID-only devices
+keep their existing path. No Linux/BlueZ service is involved.
+
+The intended profile is stereo A2DP/SBC playback, with one Bluetooth output
+active at a time. Microphone/HFP, AAC and simultaneous Bluetooth outputs are
+not implemented. Backend diagnostics are root-only at
+`/var/run/omarchy-bluetooth/audio.log`.
+
+`bash tests/bluetooth-audio.sh` checks HID isolation, A2DP detection, startup
+failures and user-session routing. On FreeBSD, run
+`bash tests/bluetooth-audio-native.sh` as the logged-in desktop user with sudo
+available and `virtual_oss_bluetooth` installed. It exercises real virtual OSS,
+PipeWire default-output selection, a PCM write and cleanup, replacing only
+the Bluetooth transport with `/dev/null`. This bridge test passed on the
+selected October 12 snapshot; it does not qualify radio audio. Real headset
+pairing, playback/volume, disconnect/reconnect and reboot tests remain pending.
+
 Daemonarchy installations expose `daemonarchy` as the desktop command center
 (`daemonarchy --help`, `daemonarchy commands`, `daemonarchy update`). Its
 routes and help use Daemonarchy's name while retaining the upstream command
