@@ -127,6 +127,9 @@ PYMENU
   if [[ -f $tree/bin/omarchy-default-editor ]]; then
     sed -i '' -e 's/zeditor/zedit/g' -e 's/helix/hx/g' "$tree/bin/omarchy-default-editor"
   fi
+  if [[ -f $tree/install/user/first-run/welcome.sh ]]; then
+    sed -i '' 's/Omarchy Menu/Daemonarchy Menu/g' "$tree/install/user/first-run/welcome.sh"
+  fi
   # First-run setup must not regenerate Linux downloader wrappers.
   if [[ -f $tree/install/user/mise.sh ]]; then
     printf '%s\n' 'omarchy-mise-install codex' 'omarchy-mise-install crush' 'omarchy-mise-install gh' >"$tree/install/user/mise.sh"
