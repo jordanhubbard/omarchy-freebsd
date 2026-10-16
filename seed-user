@@ -8,7 +8,7 @@
 # Omarchy session. Existing files are never overwritten; use
 # omarchy-reinstall-configs to reset to the shipped defaults.
 
-set -e
+set -eo pipefail
 
 skel="%%DATADIR%%/skel"
 marker="$HOME/.local/state/omarchy/freebsd-seeded"
@@ -39,9 +39,11 @@ fi
 # %%DATADIR%%/skel.d/<package>. They go in ahead of Omarchy's, because cp -n
 # keeps any file already there, such as an existing ~/.bashrc.
 for extra in "$skel.d"/*/; do
-  [[ -d $extra ]] && cp -Rn "$extra." "$HOME/"
+  if [[ -d $extra ]]; then
+    tar -C "$extra" -cf - . | tar -C "$HOME" -xkpf -
+  fi
 done
-cp -Rn "$skel/." "$HOME/"
+tar -C "$skel" -cf - . | tar -C "$HOME" -xkpf -
 
 mkdir -p "$(dirname "$marker")"
 touch "$marker"

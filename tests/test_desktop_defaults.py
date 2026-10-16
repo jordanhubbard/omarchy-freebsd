@@ -214,6 +214,26 @@ exit 17
             self.assertNotEqual(self.browser(desktop).returncode, 0)
         self.assertFalse(Path(self.env["TEST_OUTPUT"]).exists())
 
+    def test_seed_existing_home_keeps_choices_and_completes(self):
+        home = self.work / "home"
+        (home / ".config").mkdir(parents=True)
+        home.chmod(0o700)
+        (home / ".config/choice").write_text("custom")
+        skel = self.tree / "skel"
+        (skel / ".config").mkdir(parents=True)
+        (skel / ".config/choice").write_text("upstream")
+        (skel / ".config/added").write_text("new")
+        extra = self.tree / "skel.d/daemonarchy/.config"
+        extra.mkdir(parents=True)
+        (extra / "added").write_text("native")
+        result = subprocess.run(["bash", str(self.substituted("seed-user"))],
+                                env={**self.env, "HOME": str(home)}, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((home / ".config/choice").read_text(), "custom")
+        self.assertEqual((home / ".config/added").read_text(), "native")
+        self.assertEqual(home.stat().st_mode & 0o777, 0o700)
+        self.assertTrue((home / ".local/state/omarchy/freebsd-seeded").is_file())
+
     def test_already_seeded_home_migration_preserves_custom_settings(self):
         home = self.work / "home"
         apps = home / ".local/share/applications"
