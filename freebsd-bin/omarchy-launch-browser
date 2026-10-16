@@ -1,28 +1,61 @@
-#!/bin/bash
+#!/usr/bin/env python3
 
 # omarchy:summary=Launch the selected desktop browser, defaulting to Chromium
 # omarchy:args=[url] [--private]
 
-set -euo pipefail
+import os
+import subprocess
+import sys
 
-desktop_id=$(env -u BROWSER xdg-settings get default-web-browser 2>/dev/null || true)
-if [[ -z $desktop_id ]]; then
-  desktop_id=$(xdg-mime query default x-scheme-handler/https 2>/dev/null || true)
-fi
-desktop_id=${desktop_id:-chromium-browser.desktop}
-# gtk-launch resolves XDG application paths (including /usr/local), and expands
-# the desktop Exec field correctly without evaluating it as shell source.
-if [[ $desktop_id == -* || $desktop_id == */* || $desktop_id == *$'\n'* || $desktop_id != *.desktop ]]; then
-  echo 'Invalid default browser desktop ID' >&2
-  exit 1
-fi
-case "$desktop_id" in
-  *firefox*|*Firefox*|*zen*) private_flag=--private-window ;;
-  *edge*) private_flag=--inprivate ;;
-  *) private_flag=--incognito ;;
-esac
-args=()
-for argument in "$@"; do
-  if [[ $argument == --private ]]; then args+=("$private_flag"); else args+=("$argument"); fi
-done
-exec uwsm-app -- gtk-launch -- "$desktop_id" "${args[@]}"
+
+def default_browser():
+    env = dict(os.environ)
+    env.pop("BROWSER", None)
+    for command in (("xdg-settings", "get", "default-web-browser"),
+                    ("xdg-mime", "query", "default", "x-scheme-handler/https")):
+        try:
+            result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=10)
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip()
+    return "chromium-browser.desktop"
+
+
+def main(args):
+    import gi
+    gi.require_version("Gio", "2.0")
+    gi.require_version("GioUnix", "2.0")
+    from gi.repository import GioUnix, GLib
+
+    desktop_id = default_browser()
+    if (desktop_id.startswith("-") or "/" in desktop_id or "\n" in desktop_id
+            or not desktop_id.endswith(".desktop")):
+        raise ValueError("Invalid default browser desktop ID")
+    # GIO resolves XDG application paths and expands the full desktop Exec
+    # field without interpreting shell source, preserving browser options.
+    info = GioUnix.DesktopAppInfo.new(desktop_id)
+    if info is None:
+        raise ValueError(f"Browser application not installed: {desktop_id}")
+    if "--private" in args:
+        name = desktop_id.lower()
+        flag = ("--private-window" if "firefox" in name or "zen" in name
+                else "--inprivate" if "edge" in name else "--incognito")
+        keyfile = GLib.KeyFile()
+        keyfile.load_from_file(info.get_filename(), GLib.KeyFileFlags.NONE)
+        command = keyfile.get_string("Desktop Entry", "Exec")
+        keyfile.set_string("Desktop Entry", "Exec", command + " " + flag)
+        # A D-Bus activation would bypass the modified Exec line.
+        keyfile.set_boolean("Desktop Entry", "DBusActivatable", False)
+        info = GioUnix.DesktopAppInfo.new_from_keyfile(keyfile)
+        if info is None:
+            raise ValueError("Cannot prepare the private browser launcher")
+    info.launch_uris([arg for arg in args if arg != "--private"], None)
+
+
+if __name__ == "__main__":
+    try:
+        main(sys.argv[1:])
+    except Exception as error:
+        print(f"Cannot launch browser: {error}", file=sys.stderr)
+        sys.exit(1)

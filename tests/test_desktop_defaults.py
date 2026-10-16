@@ -4,7 +4,9 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
+import time
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -100,23 +102,38 @@ exit 23
     def browser(self, desktop, *args):
         self.command("xdg-settings", 'printf "%s" "$TEST_DESKTOP"\n')
         self.command("xdg-mime", "exit 1\n")
-        self.command("uwsm-app", 'test "$1" = -- || exit 99; shift; exec "$@"\n')
-        self.command("gtk-launch", 'python3 -c \'import json,os,sys; open(os.environ["TEST_OUTPUT"],"w").write(json.dumps(sys.argv[1:]))\' "$@"\n')
+        applications = self.work / "data/applications"
+        applications.mkdir(parents=True, exist_ok=True)
+        capture = self.work / "capture.py"
+        capture.write_text('import json,os,sys\nopen(os.environ["TEST_OUTPUT"],"w").write(json.dumps(sys.argv[1:]))\n')
+        for name in ("chromium-browser.desktop", "firefox.desktop"):
+            (applications / name).write_text(
+                f'[Desktop Entry]\nType=Application\nName=Test browser\n'
+                f'Exec="{sys.executable}" "{capture}" "--configured=a b" %U\n')
+        self.env["XDG_DATA_HOME"] = str(applications.parent)
         self.env["TEST_DESKTOP"] = desktop
-        result = subprocess.run(["bash", str(ROOT / "freebsd-bin/omarchy-launch-browser"), *args],
+        Path(self.env["TEST_OUTPUT"]).unlink(missing_ok=True)
+        result = subprocess.run([sys.executable, str(ROOT / "freebsd-bin/omarchy-launch-browser"), *args],
                                 env=self.env, capture_output=True, text=True)
+        if result.returncode == 0:
+            deadline = time.monotonic() + 5
+            while not Path(self.env["TEST_OUTPUT"]).exists() and time.monotonic() < deadline:
+                time.sleep(0.02)
+            self.assertTrue(Path(self.env["TEST_OUTPUT"]).exists(), "GIO did not execute the browser")
         return result
 
+    @unittest.skipUnless(sys.platform.startswith("freebsd"), "Native GIO launch test on FreeBSD")
     def test_browser_fallback_and_argument_boundaries(self):
         result = self.browser("", "https://example.test/a?x=a b", "--private")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(Path(self.env["TEST_OUTPUT"]).read_text()),
-                         ["--", "chromium-browser.desktop", "https://example.test/a?x=a b", "--incognito"])
+                         ["--configured=a b", "https://example.test/a?x=a b", "--incognito"])
         result = self.browser("firefox.desktop", "--private")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(Path(self.env["TEST_OUTPUT"]).read_text()),
-                         ["--", "firefox.desktop", "--private-window"])
+                         ["--configured=a b", "--private-window"])
 
+    @unittest.skipUnless(sys.platform.startswith("freebsd"), "Native GIO launch test on FreeBSD")
     def test_browser_rejects_invalid_desktop_id(self):
         for desktop in ("/tmp/browser.desktop", "--help.desktop", "bad\nvalue.desktop"):
             self.assertNotEqual(self.browser(desktop).returncode, 0)
