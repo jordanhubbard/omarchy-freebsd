@@ -117,6 +117,55 @@ for name in blocked_commands - retained_commands:
         "exit 1\n")
 PYMENU
   fi
+  # Command discovery is another launcher surface. Menu removal alone leaves
+  # subordinate installers and old Arch boot/upgrade tools callable by name.
+  "$PYTHON_CMD" - "$tree" <<'PYCLI'
+from pathlib import Path
+import sys
+tree = Path(sys.argv[1])
+blocked = {
+    "omarchy-dev-install-ydoo", "omarchy-dev-pkg-test",
+    "omarchy-refresh-limine", "omarchy-refresh-plymouth", "omarchy-refresh-pacman",
+    "omarchy-install-hermes-cli", "omarchy-install-openclaw-cli",
+    "omarchy-launch-openclaw", "omarchy-voxtype-install",
+    "omarchy-agent", "omarchy-agent-prompt",
+}
+blocked_prefixes = (
+    "omarchy-pkg-aur-", "omarchy-update-aur-", "omarchy-plymouth-",
+    "omarchy-hibernation-", "omarchy-reinstall", "omarchy-upgrade-",
+    "omarchy-install-service-", "omarchy-remove-service-",
+    "omarchy-install-gaming-", "omarchy-openclaw-", "omarchy-voxtype-",
+)
+# Keep harmless optional/internal probes available to their callers, including
+# UPower and Hyprland helpers with non-Linux fallbacks. These sysfs-only probes
+# and channel reports do not belong in the public FreeBSD command catalogue.
+hidden = {
+    "omarchy-audio-tuning", "omarchy-brightness-keyboard", "omarchy-brightness-keyboard-mute",
+    "omarchy-channel-current", "omarchy-version-channel",
+    "omarchy-hw-asus-rog", "omarchy-hw-dell-xps-haptic-touchpad", "omarchy-hw-dell-xps-oled",
+    "omarchy-hw-display", "omarchy-hw-external-monitors", "omarchy-hw-framework16",
+    "omarchy-hw-intel", "omarchy-hw-match", "omarchy-hw-nvidia", "omarchy-hw-nvidia-gsp",
+    "omarchy-hw-nvidia-without-gsp", "omarchy-hw-surface",
+}
+for path in (tree / "bin").glob("omarchy-*"):
+    if not path.is_file():
+        continue
+    if path.name in blocked or path.name.startswith(blocked_prefixes):
+        path.write_text(
+            "#!/bin/sh\n# omarchy:hidden=true\n"
+            "printf '%s\\n' 'This upstream action is not supported on FreeBSD. Use Daemonarchy Packages or native FreeBSD tools.' >&2\n"
+            "exit 1\n")
+    elif path.name in hidden or path.name.startswith("omarchy-agent-"):
+        text = path.read_text()
+        if "# omarchy:hidden=true" not in text:
+            first, separator, rest = text.partition("\n")
+            path.write_text(first + separator + "# omarchy:hidden=true\n" + rest)
+# These notifications advertise removed setup paths, not native package UIs.
+for name in ("setup-agent.hook", "install-voxtype.hook", "setup-fingerprint.hook"):
+    hook = tree / "install/user/first-run" / name
+    if hook.is_file():
+        hook.write_text("#!/bin/sh\n# Unsupported upstream setup is not offered on FreeBSD.\nexit 0\n")
+PYCLI
   # Bindings are also user-facing launch points. Keep useful keys only where
   # this release supplies a native application/action.
   local bindings

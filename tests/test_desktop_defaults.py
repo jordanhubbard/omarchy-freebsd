@@ -130,11 +130,21 @@ exit 17
         unsafe.write_text("#!/bin/sh\necho should-not-run\n")
         unsafe.chmod(0o755)
         linux_probes = ("omarchy-network-band", "omarchy-network-speedtest", "omarchy-disk-speedtest",
-                        "omarchy-network-password", "omarchy-dev-install-ydoo", "omarchy-dev-pkg-test")
+                        "omarchy-network-password", "omarchy-dev-install-ydoo", "omarchy-dev-pkg-test",
+                        "omarchy-pkg-aur-add", "omarchy-update-aur-pkgs", "omarchy-plymouth-set",
+                        "omarchy-hibernation-setup", "omarchy-reinstall-configs", "omarchy-upgrade-to-quattro",
+                        "omarchy-refresh-limine", "omarchy-refresh-pacman", "omarchy-install-hermes-cli",
+                        "omarchy-launch-openclaw", "omarchy-openclaw-onboard", "omarchy-voxtype-install",
+                        "omarchy-install-service-sunshine", "omarchy-remove-service-1password",
+                        "omarchy-install-gaming-gpu-lib32", "omarchy-agent")
         for name in linux_probes:
             path = self.tree / "bin" / name
-            path.write_text("#!/bin/sh\necho should-not-run\n")
+            path.write_text("#!/bin/sh\n# omarchy:summary=Unsupported Linux action\necho should-not-run\n")
             path.chmod(0o755)
+        hooks = self.tree / "install/user/first-run"
+        hooks.mkdir(parents=True)
+        for name in ("setup-agent.hook", "install-voxtype.hook", "setup-fingerprint.hook"):
+            (hooks / name).write_text("#!/bin/sh\necho should-not-run\n")
         shared = self.tree / "bin/omarchy-launch-floating-terminal-with-presentation"
         shared.write_text("#!/bin/sh\necho native-terminal\n")
         bindings = self.tree / "default/hypr/bindings"
@@ -158,8 +168,12 @@ exit 17
         routes = subprocess.run(["bash", str(self.tree / "bin/daemonarchy"), "commands", "--json"],
                                 capture_output=True, text=True)
         self.assertEqual(routes.returncode, 0, routes.stderr)
-        for command in ("daemonarchy dev install ydoo", "daemonarchy dev pkg test"):
-            self.assertNotIn(command, routes.stdout)
+        visible = {row['binary'] for row in json.loads(routes.stdout)['commands']}
+        self.assertFalse(visible.intersection(linux_probes), visible.intersection(linux_probes))
+        for hook in hooks.iterdir():
+            result = subprocess.run(["sh", str(hook)], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout, "")
         entries = {}
         for line in menu.read_text().splitlines():
             if line.strip().startswith('"'):
