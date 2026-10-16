@@ -123,13 +123,14 @@ exit 17
         source = Path(os.environ["OMARCHY_TEST_MENU"])
         menu = self.tree / "default/omarchy/omarchy-menu.jsonc"
         shutil.copyfile(source, menu)
+        shutil.copyfile(ROUTER, self.tree / "bin/omarchy")
         # Unknown future upstream apps are excluded until reviewed.
         (self.tree / "applications/NewLinuxApp.desktop").write_text("[Desktop Entry]\n")
         unsafe = self.tree / "bin/omarchy-windows-vm"
         unsafe.write_text("#!/bin/sh\necho should-not-run\n")
         unsafe.chmod(0o755)
         linux_probes = ("omarchy-network-band", "omarchy-network-speedtest", "omarchy-disk-speedtest",
-                        "omarchy-network-password")
+                        "omarchy-network-password", "omarchy-dev-install-ydoo", "omarchy-dev-pkg-test")
         for name in linux_probes:
             path = self.tree / "bin" / name
             path.write_text("#!/bin/sh\necho should-not-run\n")
@@ -154,6 +155,11 @@ exit 17
             self.assertIn("not supported on FreeBSD", result.stderr)
             self.assertNotIn("should-not-run", result.stdout)
         self.assertIn("native-terminal", shared.read_text())
+        routes = subprocess.run(["bash", str(self.tree / "bin/daemonarchy"), "commands", "--json"],
+                                capture_output=True, text=True)
+        self.assertEqual(routes.returncode, 0, routes.stderr)
+        for command in ("daemonarchy dev install ydoo", "daemonarchy dev pkg test"):
+            self.assertNotIn(command, routes.stdout)
         entries = {}
         for line in menu.read_text().splitlines():
             if line.strip().startswith('"'):

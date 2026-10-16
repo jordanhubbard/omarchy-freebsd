@@ -73,7 +73,8 @@ unsupported = (
 rows = []
 blocked_commands = {"omarchy-dns", "omarchy-network-band", "omarchy-network-qr",
                     "omarchy-network-password", "omarchy-network-speedtest",
-                    "omarchy-disk-speedtest"}
+                    "omarchy-disk-speedtest", "omarchy-dev-install-ydoo",
+                    "omarchy-dev-pkg-test"}
 retained_commands = set()
 for line in path.read_text().splitlines():
     stripped = line.strip().rstrip(",")
