@@ -86,11 +86,15 @@ for line in path.read_text().splitlines():
         continue
     retained_commands.update(re.findall(r"omarchy-[a-zA-Z0-9-]+", value.get("action", "")))
     if key == "learn.arch":
-        value.update(label="FreeBSD Handbook", action="omarchy-launch-browser https://docs.freebsd.org/en/books/handbook/")
+        value.update(icon="", label="FreeBSD Handbook", action="omarchy-launch-browser https://docs.freebsd.org/en/books/handbook/")
     elif key == "learn.omarchy":
         value.update(label="Daemonarchy", action="omarchy-launch-browser https://github.com/jordanhubbard/daemonarchy/blob/main/docs/getting-started.md")
     elif key == "learn.community":
         value.update(label="Daemonarchy Issues", action="omarchy-launch-browser https://github.com/jordanhubbard/daemonarchy/issues")
+    elif key in {"setup.default.editor.helix", "setup.default.editor.zed"}:
+        old, new = ("helix", "hx") if key.endswith(".helix") else ("zeditor", "zedit")
+        for field in ("action", "when", "checked"):
+            value[field] = value.get(field, "").replace(old, new)
     elif key == "update.omarchy":
         value["label"] = "Daemonarchy"
     elif key in {"install.package", "remove.package"}:
@@ -108,6 +112,17 @@ for name in blocked_commands - retained_commands:
         "printf '%s\\n' 'This upstream action is not supported on FreeBSD. Use Daemonarchy Packages or native FreeBSD tools.' >&2\n"
         "exit 1\n")
 PYMENU
+  fi
+  # Bindings are also user-facing launch points. Keep useful keys only where
+  # this release supplies a native application/action.
+  local bindings
+  for bindings in "$tree"/default/hypr/bindings/*.lua; do
+    [[ -f $bindings ]] || continue
+    sed -i '' -E '/o\.bind.*(omarchy-launch-docker-tui|omarchy-capture-screenrecording|omarchy-capture-webcam-resize|omarchy-menu toggle share|omarchy-agent --pick|omarchy = "(spotify|1password|signal)")/d' "$bindings"
+    sed -i '' 's/"Omarchy menu"/"Daemonarchy menu"/g' "$bindings"
+  done
+  if [[ -f $tree/bin/omarchy-default-editor ]]; then
+    sed -i '' -e 's/zeditor/zedit/g' -e 's/helix/hx/g' "$tree/bin/omarchy-default-editor"
   fi
   # First-run setup must not regenerate Linux downloader wrappers.
   if [[ -f $tree/install/user/mise.sh ]]; then

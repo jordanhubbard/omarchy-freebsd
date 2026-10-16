@@ -7,7 +7,8 @@
 
 # FreeBSD has no BlueZ. Its own stack (ng_ubt and ng_hci, hccontrol(8),
 # hcsecd(8) for link keys and PINs, bthidd(8) for keyboards and mice) covers
-# input devices; there is no Bluetooth audio. Changing anything needs root,
+# input devices in this backend. Audio needs separate virtual_oss integration.
+# Changing anything needs root,
 # asked for with pkexec, which Omarchy's polkit rule grants an active local
 # wheel session without a password, as BlueZ and NetworkManager do on Arch.
 # What the panel polls is kept in world-readable files, so polling never needs

@@ -130,7 +130,14 @@ exit 17
         unsafe.chmod(0o755)
         shared = self.tree / "bin/omarchy-launch-floating-terminal-with-presentation"
         shared.write_text("#!/bin/sh\necho native-terminal\n")
+        bindings = self.tree / "default/hypr/bindings"
+        bindings.mkdir(parents=True)
+        (bindings / "applications.lua").write_text(
+            Path(os.environ.get("OMARCHY_TEST_BINDINGS", str(Path(os.environ["OMARCHY_TEST_MENU"]).parent / "upstream/default/hypr/bindings/applications.lua"))).read_text())
         self.adapt()
+        self.assertNotIn('"Docker"', (bindings / "applications.lua").read_text())
+        self.assertNotIn('omarchy = "spotify"', (bindings / "applications.lua").read_text())
+        self.assertIn('"Browser"', (bindings / "applications.lua").read_text())
         result = subprocess.run([str(unsafe), "install"], capture_output=True, text=True)
         self.assertEqual(result.returncode, 1)
         self.assertIn("not supported on FreeBSD", result.stderr)
@@ -153,6 +160,8 @@ exit 17
         self.assertEqual(entries["remove.package"]["action"], "uwsm-app -- octopkg")
         self.assertEqual(entries["learn.arch"]["label"], "FreeBSD Handbook")
         self.assertFalse((self.tree / "applications/NewLinuxApp.desktop").exists())
+        self.assertEqual(entries["setup.default.editor.helix"]["action"], "omarchy-default-editor hx")
+        self.assertIn("zedit", entries["setup.default.editor.zed"]["when"])
         self.assertIn("system.reboot", entries)
         self.assertIn("trigger.capture.screenshot", entries)
 
