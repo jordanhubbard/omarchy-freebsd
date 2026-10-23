@@ -83,7 +83,9 @@ json_networks() {
   current=$(wpa status | sed -n 's/^ssid=//p')
   {
     wpa scan_results | tail -n +2 | awk -F '\t' 'NF >= 5 && $5 != "" {
-      sec = "open"
+      # Unknown WPA/RSN flags are protected, not passwordless.
+      sec = "unknown"
+      if ($4 !~ /WPA|RSN|WEP|OWE|SAE/) sec = "open"
       if ($4 ~ /EAP/) sec = ($4 ~ /WPA2|RSN/) ? "wpa2-eap" : "wpa-eap"
       else if ($4 ~ /SAE/) sec = "sae"
       else if ($4 ~ /WPA2-PSK|RSN-PSK/) sec = "wpa2-psk"
