@@ -207,6 +207,26 @@ PYBAR
   if [[ -f $tree/install/user/mise.sh ]]; then
     printf '%s\n' 'omarchy-mise-install codex' 'omarchy-mise-install crush' 'omarchy-mise-install gh' >"$tree/install/user/mise.sh"
   fi
+  # sysutils/mise is not built for every architecture (BROKEN_aarch64), so the
+  # package does not always depend on it. Provisioning runs this step under
+  # bash -eE; without mise, keep the work directories, skip the mise trust and
+  # Node.js selection, and say so in the install log.
+  local mise_work=$tree/install/user/mise-work.sh
+  if [[ -f $mise_work ]] && ! grep -q '^# omarchy-freebsd: optional mise$' "$mise_work"; then
+    {
+      cat <<'MISEGUARD'
+# omarchy-freebsd: optional mise
+if ! command -v mise >/dev/null 2>&1; then
+  mkdir -p "$HOME/Work/tries"
+  echo "omarchy-freebsd: mise is not installed; skipped mise-work.sh (mise trust of ~/Work/.mise.toml and Node.js selection)." >&2
+  return 0 2>/dev/null || exit 0
+fi
+
+MISEGUARD
+      cat "$mise_work"
+    } >"$mise_work.new"
+    mv "$mise_work.new" "$mise_work"
+  fi
   # Keep the metadata format and omarchy-* binaries the router discovers.
   # Only its public routes/help use Daemonarchy's name.
   if [[ -f $tree/bin/omarchy ]]; then

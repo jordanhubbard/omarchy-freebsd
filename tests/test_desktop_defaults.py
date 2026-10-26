@@ -276,6 +276,87 @@ assert.deepEqual(indicatorEntriesFromSettings({indicators:['Dictation','ScreenRe
             self.assertNotEqual(self.browser(desktop).returncode, 0)
         self.assertFalse(Path(self.env["TEST_OUTPUT"]).exists())
 
+    # The provisioning step as shipped (upstream mise-work.sh after the port's
+    # Node.js patch), reduced to its mise operations.
+    MISE_WORK = """# Setup default work directory (and tries)
+mkdir -p "$HOME/Work"
+mkdir -p "$HOME/Work/tries"
+
+cat >"$HOME/Work/.mise.toml" <<'TOML'
+[env]
+_.path = "{{ cwd }}/bin"
+TOML
+
+mise trust ~/Work/.mise.toml
+
+case ${OMARCHY_SETUP_CONTEXT:-runtime} in
+  iso-chroot) NODE_PACKAGE_DIR=/opt/packages ;;
+  *) NODE_PACKAGE_DIR="" ;;
+esac
+if [[ -n $NODE_PACKAGE_DIR ]]; then
+  mise use -g node@latest
+elif ! command -v node >/dev/null; then
+  echo "Warning: Node.js is not installed" >&2
+fi
+"""
+
+    def mise_tree(self):
+        user = self.tree / "install/user"
+        user.mkdir(parents=True)
+        (user / "mise-work.sh").write_text(self.MISE_WORK)
+        (user / "mise.sh").write_text("mise settings set upgrade.auto_prune false\n"
+                                      "omarchy-mise-install claude\n")
+        self.adapt()
+        return user
+
+    def provision_step(self, name, path_dirs):
+        """Run a step the way omarchy-provision-user's run_logged does."""
+        home = self.work / "home"
+        home.mkdir(exist_ok=True)
+        env = {**self.env, "HOME": str(home), "PATH": ":".join(map(str, path_dirs))}
+        return home, subprocess.run(
+            [shutil.which("bash"), "-eE", "-c", 'source "$1"', "bash",
+             str(self.tree / "install/user" / name)],
+            env=env, capture_output=True, text=True)
+
+    def system_path(self):
+        """Only the base tools the step uses, so a host mise is never found."""
+        tools = self.work / "system"
+        if not tools.is_dir():
+            tools.mkdir()
+            for name in ("mkdir", "cat"):
+                (tools / name).symlink_to(shutil.which(name))
+        return tools
+
+    def test_provisioning_skips_mise_steps_when_mise_is_absent(self):
+        user = self.mise_tree()
+        home, result = self.provision_step("mise-work.sh", [self.system_path()])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("omarchy-freebsd: mise is not installed; skipped mise-work.sh", result.stderr)
+        self.assertTrue((home / "Work/tries").is_dir())
+        self.assertFalse((home / "Work/.mise.toml").exists())
+        # The FreeBSD mise.sh installs reviewed package wrappers and never runs mise.
+        self.assertNotRegex((user / "mise.sh").read_text(), r"(?m)^\s*mise\s")
+        # Adapting an already adapted tree adds the guard only once.
+        self.adapt()
+        self.assertEqual((user / "mise-work.sh").read_text().count("# omarchy-freebsd: optional mise"), 1)
+
+    def test_provisioning_runs_mise_steps_when_mise_is_installed(self):
+        self.mise_tree()
+        self.command("mise", 'printf "%s\\n" "$*" >>"$HOME/mise.log"\n')
+        home, result = self.provision_step("mise-work.sh", [self.bin, self.system_path()])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("skipped mise-work.sh", result.stderr)
+        self.assertTrue((home / "Work/.mise.toml").is_file())
+        self.assertEqual((home / "mise.log").read_text().splitlines(),
+                         [f"trust {home}/Work/.mise.toml"])
+
+    def test_provisioning_still_fails_when_installed_mise_fails(self):
+        self.mise_tree()
+        self.command("mise", "exit 3\n")
+        _, result = self.provision_step("mise-work.sh", [self.bin, self.system_path()])
+        self.assertEqual(result.returncode, 3, result.stderr)
+
     def test_seed_existing_home_keeps_choices_and_completes(self):
         home = self.work / "home"
         (home / ".config").mkdir(parents=True)
