@@ -68,3 +68,7 @@ omitted: this desktop configures neither a Docker VM nor a remote engine.
 For desktop policy tests, set `OMARCHY_TEST_ROUTER` to Omarchy's upstream
 `bin/omarchy` (or use the installed `/usr/local/bin/omarchy`) and run
 `python3 -m unittest discover -s tests -v`.
+
+## License
+
+This repository is part of the Daemonarchy project. See [LICENSE](LICENSE) and [licenses/README.md](licenses/README.md) for which files are under which license.
