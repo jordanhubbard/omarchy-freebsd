@@ -225,6 +225,37 @@ exit 17
         self.assertNotIn("trigger.tests.network-speedtest", entries)
         self.assertNotIn("trigger.tests.disk-speedtest", entries)
 
+    @unittest.skipUnless(shutil.which("node"), "Node needed to exercise upstream menu translations")
+    def test_translation_catalog_cannot_restore_linux_menu_labels(self):
+        upstream = Path(os.environ["OMARCHY_TEST_MENU"]).parents[2]
+        shutil.copyfile(upstream / "default/omarchy/omarchy-menu.jsonc",
+                        self.tree / "default/omarchy/omarchy-menu.jsonc")
+        for language in ("en", "de"):
+            destination = self.tree / "default/i18n" / language
+            destination.mkdir(parents=True)
+            shutil.copyfile(upstream / "default/i18n" / language / "menu.json",
+                            destination / "menu.json")
+        self.adapt()
+        # Exercise upstream's real translation function, which runs after the
+        # FreeBSD menu rewrite, rather than just inspecting the rewritten JSON.
+        result = subprocess.run(["node", "-e", '''
+const fs = require('fs'), vm = require('vm');
+const model = vm.runInNewContext(fs.readFileSync(process.argv[1], 'utf8') +
+  '\\n({parseMenuJsonc, applyTranslations})');
+const rows = model.parseMenuJsonc(fs.readFileSync(process.argv[2], 'utf8'));
+const catalog = JSON.parse(fs.readFileSync(process.argv[3], 'utf8'));
+console.log(JSON.stringify(Object.fromEntries(model.applyTranslations(rows, catalog).map(row => [row.id, row.label]))));
+''', str(upstream / "shell/plugins/menu/MenuModel.js"),
+                str(self.tree / "default/omarchy/omarchy-menu.jsonc"),
+                str(self.tree / "default/i18n/en/menu.json")], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        labels = json.loads(result.stdout)
+        self.assertEqual(labels["learn.arch"], "FreeBSD Handbook")
+        self.assertEqual(labels["learn.omarchy"], "Daemonarchy")
+        self.assertEqual(labels["update.omarchy"], "Daemonarchy")
+        german = json.loads((self.tree / "default/i18n/de/menu.json").read_text())
+        self.assertNotIn("label", german.get("learn.arch", {}))
+
     @unittest.skipUnless(shutil.which("node"), "Node needed to exercise the QML settings functions")
     def test_bar_excludes_unqualified_indicators_from_defaults_and_existing_settings(self):
         source = Path(os.environ["OMARCHY_TEST_MENU"]).parents[2] / "shell/plugins/bar/widgets"

@@ -76,6 +76,7 @@ blocked_commands = {"omarchy-dns", "omarchy-network-band", "omarchy-network-qr",
                     "omarchy-disk-speedtest", "omarchy-dev-install-ydoo",
                     "omarchy-dev-pkg-test"}
 retained_commands = set()
+native_labels = {}
 for line in path.read_text().splitlines():
     stripped = line.strip().rstrip(",")
     if not stripped.startswith('"'):
@@ -89,6 +90,7 @@ for line in path.read_text().splitlines():
         blocked_commands.update(re.findall(r"omarchy-[a-zA-Z0-9-]+", value.get("action", "")))
         continue
     retained_commands.update(re.findall(r"omarchy-[a-zA-Z0-9-]+", value.get("action", "")))
+    original_label = value.get("label")
     if key == "learn.arch":
         value.update(icon="", label="FreeBSD Handbook", action="omarchy-launch-browser https://docs.freebsd.org/en/books/handbook/")
     elif key == "learn.omarchy":
@@ -106,8 +108,21 @@ for line in path.read_text().splitlines():
         value["label"] = "Daemonarchy"
     elif key in {"install.package", "remove.package"}:
         value.update(icon="󰏖", label="Packages", action="uwsm-app -- octopkg")
+    if value.get("label") != original_label:
+        native_labels[key] = value["label"]
     rows.append("  " + json.dumps(key) + ": " + json.dumps(value, ensure_ascii=False, separators=(",", ":")) + ",")
 path.write_text("\n".join(rows) + "\n")
+# Omarchy 4.5 translates defaults after parsing them. Its Linux catalog labels
+# must not overwrite the FreeBSD captions above. Native captions use English
+# until their own translations are reviewed; other translated fields survive.
+for catalog_path in (path.parents[1] / "i18n").glob("*/menu.json"):
+    catalog = json.loads(catalog_path.read_text())
+    for key, label in native_labels.items():
+        if catalog_path.parent.name == "en":
+            catalog.setdefault(key, {})["label"] = label
+        elif isinstance(catalog.get(key), dict):
+            catalog[key].pop("label", None)
+    catalog_path.write_text(json.dumps(catalog, ensure_ascii=False, indent=2) + "\n")
 # Keep packaged filenames for compatibility but hide unsupported CLI routes and
 # fail before touching services, disks or downloading Linux software.
 bin_dir = path.parents[2] / "bin"
