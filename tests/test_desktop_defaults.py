@@ -50,6 +50,30 @@ class DesktopDefaults(unittest.TestCase):
                                  "--in-place", str(self.tree)], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_transient_worker_forwards_named_and_explicit_environment(self):
+        shim = self.substituted("compat/systemd-run")
+        env = dict(self.env, FORWARD_VALUE="caller value", EXPLICIT_VALUE="stale")
+        env.pop("ABSENT_VALUE", None)
+        result = subprocess.run(
+            ["bash", str(shim), "--wait", "--setenv=PATH",
+             "--setenv=FORWARD_VALUE", "--setenv=ABSENT_VALUE",
+             "--setenv=EXPLICIT_VALUE=new=value", sys.executable, "-c",
+             "import json,os; print(json.dumps(dict(os.environ)))"],
+            env=env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        actual = json.loads(result.stdout)
+        self.assertEqual(actual["PATH"], env["PATH"])
+        self.assertEqual(actual["FORWARD_VALUE"], "caller value")
+        self.assertEqual(actual["EXPLICIT_VALUE"], "new=value")
+        self.assertNotIn("ABSENT_VALUE", actual)
+
+        result = subprocess.run(
+            ["bash", str(shim), "--wait", "--setenv=bad-name=value",
+             sys.executable, "-c", "print('worker ran')"],
+            env=env, capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "")
+
     def test_real_router_help_dispatch_metadata_and_exit_status(self):
         self.assertTrue(ROUTER.is_file(), "Set OMARCHY_TEST_ROUTER to the upstream router")
         shutil.copyfile(ROUTER, self.tree / "bin/omarchy")

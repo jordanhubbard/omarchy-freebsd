@@ -34,7 +34,18 @@ done
 (($#)) || { echo "Usage: systemd-run [options] command [args...]" >&2; exit 1; }
 
 for assignment in "${env_assignments[@]}"; do
-  export "${assignment%%=*}=${assignment#*=}"
+  name=${assignment%%=*}
+  if [[ ! $name =~ ^[a-zA-Z_][a-zA-Z0-9_]*$ ]]; then
+    echo "systemd-run: invalid environment variable name '$name'" >&2
+    exit 1
+  fi
+  if [[ $assignment == *=* ]]; then
+    export "$assignment"
+  elif [[ -v $name ]]; then
+    # A bare --setenv=NAME forwards the caller's value. Omarchy 4.5 uses
+    # this for PATH and the compositor/session environment of exit workers.
+    export "$name"
+  fi
 done
 
 if ((wait_for_exit)) && [[ -z $delay ]]; then
