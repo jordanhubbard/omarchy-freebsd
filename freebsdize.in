@@ -143,6 +143,7 @@ import sys
 tree = Path(sys.argv[1])
 blocked = {
     "omarchy-kernel", "omarchy-boot-direct",
+    "omarchy-sudo-passwordless",
     "omarchy-dev-install-ydoo", "omarchy-dev-pkg-test",
     "omarchy-refresh-limine", "omarchy-refresh-plymouth", "omarchy-refresh-pacman",
     "omarchy-install-hermes-cli", "omarchy-install-openclaw-cli",
@@ -191,21 +192,27 @@ from pathlib import Path
 import sys
 widgets = Path(sys.argv[1]) / "shell/plugins/bar/widgets"
 indicator = widgets / "Indicators.qml"
+# These depend on Linux-only capture, gliff /proc probes, or root-policy and
+# systemd expiry/package hooks that have not been ported. Do not offer them
+# until a native implementation and its lifecycle have been qualified.
+unsupported_indicators = {"Dictation", "ScreenRecording", "PasswordlessSudo", "RemoteSession"}
 if indicator.is_file():
     text = indicator.read_text()
-    text = text.replace('"Dictation", ', '').replace('"ScreenRecording", ', '')
+    for name in unsupported_indicators:
+        text = text.replace(json.dumps(name) + ', ', '')
     old = 'if (id !== "") result.push(item)'
-    new = 'if (id !== "" && id !== "Dictation" && id !== "ScreenRecording") result.push(item)'
-    if old not in text and new not in text:
+    previous = 'if (id !== "" && id !== "Dictation" && id !== "ScreenRecording") result.push(item)'
+    new = 'if (id !== ""' + ''.join(' && id !== ' + json.dumps(name) for name in sorted(unsupported_indicators)) + ') result.push(item)'
+    if old not in text and previous not in text and new not in text:
         raise ValueError("Review the upstream indicator settings filter before packaging")
-    indicator.write_text(text.replace(old, new))
+    indicator.write_text(text.replace(old, new).replace(previous, new))
 manifest = widgets / "Indicators.manifest.json"
 if manifest.is_file():
     data = json.loads(manifest.read_text())
     for setting in data["barWidget"]["schema"]:
         if setting.get("key") == "items":
             setting["options"] = [option for option in setting["options"]
-                                  if option.get("value") not in {"Dictation", "ScreenRecording"}]
+                                  if option.get("value") not in unsupported_indicators]
     manifest.write_text(json.dumps(data, indent=2) + "\n")
 PYBAR
   # Bindings are also user-facing launch points. Keep useful keys only where

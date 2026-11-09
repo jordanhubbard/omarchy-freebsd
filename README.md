@@ -1,6 +1,6 @@
 # omarchy-freebsd
 
-The FreeBSD compatibility layer for the [Omarchy](https://omarchy.org) desktop, installed by the FreeBSD port [`x11-wm/omarchy`](https://github.com/jordanhubbard/freebsd-ports/tree/omarchy/x11-wm/omarchy) together with Omarchy's own sources. Omarchy is written for Arch Linux; this is what lets it run, unchanged apart from these adaptations, on FreeBSD.
+The FreeBSD compatibility layer for the [Omarchy](https://omarchy.org) desktop, installed by the FreeBSD port [`x11-wm/omarchy`](https://github.com/jordanhubbard/daemonarchy-ports/tree/main/x11-wm/omarchy) together with Omarchy's own sources. Omarchy is written for Arch Linux; this is what lets it run, unchanged apart from these adaptations, on FreeBSD.
 
 ## Contents
 
@@ -65,6 +65,17 @@ First-session setup supplies missing MIME defaults without overwriting user
 choices. The stock local-Docker launcher and Docker setup menu entries are
 omitted: this desktop configures neither a Docker VM nor a remote engine.
 
-For desktop policy tests, set `OMARCHY_TEST_ROUTER` to Omarchy's upstream
-`bin/omarchy` (or use the installed `/usr/local/bin/omarchy`) and run
-`python3 -m unittest discover -s tests -v`.
+Omarchy 4.5's translation layer retains the FreeBSD menu captions. Native
+captions use English until reviewed translations are available. The default
+indicators include Reminder, NightLight, Dnd and StayAwake. Linux dictation,
+recording, gliff remote-session probes and passwordless-sudo grant/expiry
+hooks remain unqualified and are excluded from defaults, settings choices
+and retained indicator lists; other user plugin choices are preserved.
+The Linux passwordless-sudo command is hidden and fails before granting access.
+
+For desktop policy tests, point `OMARCHY_TEST_ROUTER` at the selected upstream
+`bin/omarchy`, `OMARCHY_TEST_MENU` at its `default/omarchy/omarchy-menu.jsonc`,
+and `OMARCHY_TEST_BINDINGS` at its `default/hypr/bindings/applications.lua`.
+Run `python3 -m unittest discover -s tests -v` in the selected native package
+environment. Browser launch tests need functional PyGObject/GIO; the QML
+settings and translation logic checks need Node and explicitly skip without it.

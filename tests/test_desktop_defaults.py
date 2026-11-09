@@ -162,7 +162,7 @@ exit 17
                         "omarchy-launch-openclaw", "omarchy-openclaw-onboard", "omarchy-voxtype-install",
                         "omarchy-install-service-sunshine", "omarchy-remove-service-1password",
                         "omarchy-install-gaming-gpu-lib32", "omarchy-agent",
-                        "omarchy-kernel", "omarchy-boot-direct")
+                        "omarchy-kernel", "omarchy-boot-direct", "omarchy-sudo-passwordless")
         for name in linux_probes:
             path = self.tree / "bin" / name
             path.write_text("#!/bin/sh\n# omarchy:summary=Unsupported Linux action\necho should-not-run\n")
@@ -274,9 +274,9 @@ console.log(JSON.stringify(Object.fromEntries(model.applyTranslations(rows, cata
         program += "const defaultIndicatorEntries = " + defaults + ";\n" + functions
         program += """
 assert.deepEqual(indicatorEntriesFromSettings({}), ['Reminder', 'NightLight', 'Dnd', 'StayAwake']);
-const old = {items: ['Dictation', 'Reminder', {id:'ScreenRecording'}, {id:'NightLight', detail:7}, 'UserPlugin']};
+const old = {items: ['Dictation', 'Reminder', {id:'ScreenRecording'}, 'PasswordlessSudo', {id:'RemoteSession'}, {id:'NightLight', detail:7}, 'UserPlugin']};
 assert.deepEqual(indicatorEntriesFromSettings(old), ['Reminder', {id:'NightLight', detail:7}, 'UserPlugin']);
-assert.equal(old.items.length, 5);
+assert.equal(old.items.length, 7);
 assert.deepEqual(indicatorEntriesFromSettings({indicators:['Dictation','ScreenRecording']}), []);
 """
         subprocess.run(["node", "-e", program], check=True, capture_output=True, text=True)
