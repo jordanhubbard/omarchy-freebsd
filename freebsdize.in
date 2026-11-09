@@ -58,11 +58,11 @@ keep_install = {"install.package", "install.webapp", "install.tui",
                 "install.style", "install.style.theme", "install.style.background"}
 keep_remove = {"remove.package", "remove.webapp", "remove.tui", "remove.theme"}
 unsupported = (
-    "style.unlock", "system.hibernate", "setup.direct-boot", "setup.reset",
+    "style.unlock", "appearance.unlock", "system.hibernate", "setup.direct-boot", "setup.reset",
     "setup.security", "setup.network.dns", "setup.network.qr", "setup.default.agent",
     "trigger.capture.screenrecord", "trigger.toggle.crash-capture",
     "trigger.hardware.hybrid-gpu", "trigger.hardware.touchpad-haptics",
-    "trigger.share", "update.channel", "update.config.plymouth",
+    "trigger.share", "update.channel", "update.kernel", "update.config.plymouth",
     "update.firmware", "update.password.drive", "update.hardware",
     "setup.default.browser.chrome", "setup.default.browser.brave",
     "setup.default.browser.brave-origin", "setup.default.browser.edge",
@@ -99,6 +99,9 @@ for line in path.read_text().splitlines():
         old, new = ("helix", "hx") if key.endswith(".helix") else ("zeditor", "zedit")
         for field in ("action", "when", "checked"):
             value[field] = value.get(field, "").replace(old, new)
+        # Upstream 4.5 drops these guards because its default package set
+        # installs the editors. Native FreeBSD editors remain optional.
+        value["when"] = value["when"] or "omarchy-cmd-present " + new
     elif key == "update.omarchy":
         value["label"] = "Daemonarchy"
     elif key in {"install.package", "remove.package"}:
@@ -124,6 +127,7 @@ from pathlib import Path
 import sys
 tree = Path(sys.argv[1])
 blocked = {
+    "omarchy-kernel", "omarchy-boot-direct",
     "omarchy-dev-install-ydoo", "omarchy-dev-pkg-test",
     "omarchy-refresh-limine", "omarchy-refresh-plymouth", "omarchy-refresh-pacman",
     "omarchy-install-hermes-cli", "omarchy-install-openclaw-cli",

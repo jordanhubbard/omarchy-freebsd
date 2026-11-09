@@ -161,7 +161,8 @@ exit 17
                         "omarchy-refresh-limine", "omarchy-refresh-pacman", "omarchy-install-hermes-cli",
                         "omarchy-launch-openclaw", "omarchy-openclaw-onboard", "omarchy-voxtype-install",
                         "omarchy-install-service-sunshine", "omarchy-remove-service-1password",
-                        "omarchy-install-gaming-gpu-lib32", "omarchy-agent")
+                        "omarchy-install-gaming-gpu-lib32", "omarchy-agent",
+                        "omarchy-kernel", "omarchy-boot-direct")
         for name in linux_probes:
             path = self.tree / "bin" / name
             path.write_text("#!/bin/sh\n# omarchy:summary=Unsupported Linux action\necho should-not-run\n")
@@ -212,6 +213,7 @@ exit 17
             self.assertFalse(key.startswith("setup.default.agent"))
             self.assertNotIn("plymouth", action)
             self.assertNotIn("cryptsetup", action)
+            self.assertNotEqual(value.get("provider"), "kernels")
         self.assertEqual(entries["install.package"]["action"], "uwsm-app -- octopkg")
         self.assertEqual(entries["remove.package"]["action"], "uwsm-app -- octopkg")
         self.assertEqual(entries["learn.arch"]["label"], "FreeBSD Handbook")
