@@ -1,0 +1,73 @@
+name: Native FreeBSD compatibility tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: freebsd-compat-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native-compat:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: adapters
+          persist-credentials: false
+      - name: Check out the reviewed current Omarchy integration
+        uses: actions/checkout@v4
+        with:
+          repository: jordanhubbard/omarchy
+          ref: c39121a4746c0ea533ffdf437788c62810a0f19e
+          path: omarchy
+          persist-credentials: false
+      - name: Require capacity for this software test guest
+        run: |
+          python3 - <<'PY'
+          import pathlib, shutil
+          assert shutil.disk_usage('.').free >= 20 * 1024**3
+          memory = dict(line.split(':', 1) for line in pathlib.Path('/proc/meminfo').read_text().splitlines())
+          assert int(memory['MemAvailable'].split()[0]) * 1024 >= 8 * 1024**3
+          PY
+      - name: Run actual native software controls
+        uses: vmactions/freebsd-vm@c46abacb49f09938ca4e1702d15d836285d694cc
+        with:
+          release: '15.1'
+          arch: x86_64
+          mem: '6144'
+          cpu: '2'
+          sync: rsync
+          run: |
+            mkdir -p results
+            result=0
+            (
+              set -eu
+              freebsd-version -ku
+              pkg install -y bash python312 py312-gobject3 node24 jq perl5 coreutils findutils
+              export OMARCHY_TEST_ROUTER="$(pwd)/omarchy/bin/omarchy"
+              export OMARCHY_TEST_MENU="$(pwd)/omarchy/default/omarchy/omarchy-menu.jsonc"
+              export OMARCHY_TEST_BINDINGS="$(pwd)/omarchy/default/hypr/bindings/applications.lua"
+              cd adapters
+              /usr/local/bin/python3.12 -m unittest discover -s tests -v
+              pw useradd compat_test -m
+              su -m compat_test -c '/usr/local/bin/bash tests/bluetooth-audio.sh'
+            ) > results/native.stdout 2> results/native.stderr || result=$?
+            printf '%s\n' "$result" > results/native.exit
+            pkg query '%n-%v %q' > results/bootstrap.txt
+      - name: Require successful native tests after evidence sync
+        run: |
+          cat results/native.stdout results/native.stderr
+          test "$(cat results/native.exit)" = 0
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-freebsd-compat
+          path: results/
