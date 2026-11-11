@@ -58,11 +58,11 @@ keep_install = {"install.package", "install.webapp", "install.tui",
                 "install.style", "install.style.theme", "install.style.background"}
 keep_remove = {"remove.package", "remove.webapp", "remove.tui", "remove.theme"}
 unsupported = (
-    "style.unlock", "system.hibernate", "setup.direct-boot", "setup.reset",
+    "style.unlock", "appearance.unlock", "system.hibernate", "setup.direct-boot", "setup.reset",
     "setup.security", "setup.network.dns", "setup.network.qr", "setup.default.agent",
     "trigger.capture.screenrecord", "trigger.toggle.crash-capture",
     "trigger.hardware.hybrid-gpu", "trigger.hardware.touchpad-haptics",
-    "trigger.share", "update.channel", "update.config.plymouth",
+    "trigger.share", "update.channel", "update.kernel", "update.config.plymouth",
     "update.firmware", "update.password.drive", "update.hardware",
     "setup.default.browser.chrome", "setup.default.browser.brave",
     "setup.default.browser.brave-origin", "setup.default.browser.edge",
@@ -76,6 +76,7 @@ blocked_commands = {"omarchy-dns", "omarchy-network-band", "omarchy-network-qr",
                     "omarchy-disk-speedtest", "omarchy-dev-install-ydoo",
                     "omarchy-dev-pkg-test"}
 retained_commands = set()
+native_labels = {}
 for line in path.read_text().splitlines():
     stripped = line.strip().rstrip(",")
     if not stripped.startswith('"'):
@@ -89,6 +90,7 @@ for line in path.read_text().splitlines():
         blocked_commands.update(re.findall(r"omarchy-[a-zA-Z0-9-]+", value.get("action", "")))
         continue
     retained_commands.update(re.findall(r"omarchy-[a-zA-Z0-9-]+", value.get("action", "")))
+    original_label = value.get("label")
     if key == "learn.arch":
         value.update(icon="", label="FreeBSD Handbook", action="omarchy-launch-browser https://docs.freebsd.org/en/books/handbook/")
     elif key == "learn.omarchy":
@@ -99,12 +101,28 @@ for line in path.read_text().splitlines():
         old, new = ("helix", "hx") if key.endswith(".helix") else ("zeditor", "zedit")
         for field in ("action", "when", "checked"):
             value[field] = value.get(field, "").replace(old, new)
+        # Upstream 4.5 drops these guards because its default package set
+        # installs the editors. Native FreeBSD editors remain optional.
+        value["when"] = value["when"] or "omarchy-cmd-present " + new
     elif key == "update.omarchy":
         value["label"] = "Daemonarchy"
     elif key in {"install.package", "remove.package"}:
         value.update(icon="󰏖", label="Packages", action="uwsm-app -- octopkg")
+    if value.get("label") != original_label:
+        native_labels[key] = value["label"]
     rows.append("  " + json.dumps(key) + ": " + json.dumps(value, ensure_ascii=False, separators=(",", ":")) + ",")
 path.write_text("\n".join(rows) + "\n")
+# Omarchy 4.5 translates defaults after parsing them. Its Linux catalog labels
+# must not overwrite the FreeBSD captions above. Native captions use English
+# until their own translations are reviewed; other translated fields survive.
+for catalog_path in (path.parents[1] / "i18n").glob("*/menu.json"):
+    catalog = json.loads(catalog_path.read_text())
+    for key, label in native_labels.items():
+        if catalog_path.parent.name == "en":
+            catalog.setdefault(key, {})["label"] = label
+        elif isinstance(catalog.get(key), dict):
+            catalog[key].pop("label", None)
+    catalog_path.write_text(json.dumps(catalog, ensure_ascii=False, indent=2) + "\n")
 # Keep packaged filenames for compatibility but hide unsupported CLI routes and
 # fail before touching services, disks or downloading Linux software.
 bin_dir = path.parents[2] / "bin"
@@ -124,6 +142,8 @@ from pathlib import Path
 import sys
 tree = Path(sys.argv[1])
 blocked = {
+    "omarchy-kernel", "omarchy-boot-direct",
+    "omarchy-sudo-passwordless",
     "omarchy-dev-install-ydoo", "omarchy-dev-pkg-test",
     "omarchy-refresh-limine", "omarchy-refresh-plymouth", "omarchy-refresh-pacman",
     "omarchy-install-hermes-cli", "omarchy-install-openclaw-cli",
@@ -172,21 +192,27 @@ from pathlib import Path
 import sys
 widgets = Path(sys.argv[1]) / "shell/plugins/bar/widgets"
 indicator = widgets / "Indicators.qml"
+# These depend on Linux-only capture, gliff /proc probes, or root-policy and
+# systemd expiry/package hooks that have not been ported. Do not offer them
+# until a native implementation and its lifecycle have been qualified.
+unsupported_indicators = {"Dictation", "ScreenRecording", "PasswordlessSudo", "RemoteSession"}
 if indicator.is_file():
     text = indicator.read_text()
-    text = text.replace('"Dictation", ', '').replace('"ScreenRecording", ', '')
+    for name in unsupported_indicators:
+        text = text.replace(json.dumps(name) + ', ', '')
     old = 'if (id !== "") result.push(item)'
-    new = 'if (id !== "" && id !== "Dictation" && id !== "ScreenRecording") result.push(item)'
-    if old not in text and new not in text:
+    previous = 'if (id !== "" && id !== "Dictation" && id !== "ScreenRecording") result.push(item)'
+    new = 'if (id !== ""' + ''.join(' && id !== ' + json.dumps(name) for name in sorted(unsupported_indicators)) + ') result.push(item)'
+    if old not in text and previous not in text and new not in text:
         raise ValueError("Review the upstream indicator settings filter before packaging")
-    indicator.write_text(text.replace(old, new))
+    indicator.write_text(text.replace(old, new).replace(previous, new))
 manifest = widgets / "Indicators.manifest.json"
 if manifest.is_file():
     data = json.loads(manifest.read_text())
     for setting in data["barWidget"]["schema"]:
         if setting.get("key") == "items":
             setting["options"] = [option for option in setting["options"]
-                                  if option.get("value") not in {"Dictation", "ScreenRecording"}]
+                                  if option.get("value") not in unsupported_indicators]
     manifest.write_text(json.dumps(data, indent=2) + "\n")
 PYBAR
   # Bindings are also user-facing launch points. Keep useful keys only where

@@ -50,6 +50,30 @@ class DesktopDefaults(unittest.TestCase):
                                  "--in-place", str(self.tree)], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_transient_worker_forwards_named_and_explicit_environment(self):
+        shim = self.substituted("compat/systemd-run")
+        env = dict(self.env, FORWARD_VALUE="caller value", EXPLICIT_VALUE="stale")
+        env.pop("ABSENT_VALUE", None)
+        result = subprocess.run(
+            ["bash", str(shim), "--wait", "--setenv=PATH",
+             "--setenv=FORWARD_VALUE", "--setenv=ABSENT_VALUE",
+             "--setenv=EXPLICIT_VALUE=new=value", sys.executable, "-c",
+             "import json,os; print(json.dumps(dict(os.environ)))"],
+            env=env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        actual = json.loads(result.stdout)
+        self.assertEqual(actual["PATH"], env["PATH"])
+        self.assertEqual(actual["FORWARD_VALUE"], "caller value")
+        self.assertEqual(actual["EXPLICIT_VALUE"], "new=value")
+        self.assertNotIn("ABSENT_VALUE", actual)
+
+        result = subprocess.run(
+            ["bash", str(shim), "--wait", "--setenv=bad-name=value",
+             sys.executable, "-c", "print('worker ran')"],
+            env=env, capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "")
+
     def test_real_router_help_dispatch_metadata_and_exit_status(self):
         self.assertTrue(ROUTER.is_file(), "Set OMARCHY_TEST_ROUTER to the upstream router")
         shutil.copyfile(ROUTER, self.tree / "bin/omarchy")
@@ -137,7 +161,8 @@ exit 17
                         "omarchy-refresh-limine", "omarchy-refresh-pacman", "omarchy-install-hermes-cli",
                         "omarchy-launch-openclaw", "omarchy-openclaw-onboard", "omarchy-voxtype-install",
                         "omarchy-install-service-sunshine", "omarchy-remove-service-1password",
-                        "omarchy-install-gaming-gpu-lib32", "omarchy-agent")
+                        "omarchy-install-gaming-gpu-lib32", "omarchy-agent",
+                        "omarchy-kernel", "omarchy-boot-direct", "omarchy-sudo-passwordless")
         for name in linux_probes:
             path = self.tree / "bin" / name
             path.write_text("#!/bin/sh\n# omarchy:summary=Unsupported Linux action\necho should-not-run\n")
@@ -188,6 +213,7 @@ exit 17
             self.assertFalse(key.startswith("setup.default.agent"))
             self.assertNotIn("plymouth", action)
             self.assertNotIn("cryptsetup", action)
+            self.assertNotEqual(value.get("provider"), "kernels")
         self.assertEqual(entries["install.package"]["action"], "uwsm-app -- octopkg")
         self.assertEqual(entries["remove.package"]["action"], "uwsm-app -- octopkg")
         self.assertEqual(entries["learn.arch"]["label"], "FreeBSD Handbook")
@@ -198,6 +224,37 @@ exit 17
         self.assertIn("trigger.capture.screenshot", entries)
         self.assertNotIn("trigger.tests.network-speedtest", entries)
         self.assertNotIn("trigger.tests.disk-speedtest", entries)
+
+    @unittest.skipUnless(shutil.which("node"), "Node needed to exercise upstream menu translations")
+    def test_translation_catalog_cannot_restore_linux_menu_labels(self):
+        upstream = Path(os.environ["OMARCHY_TEST_MENU"]).parents[2]
+        shutil.copyfile(upstream / "default/omarchy/omarchy-menu.jsonc",
+                        self.tree / "default/omarchy/omarchy-menu.jsonc")
+        for language in ("en", "de"):
+            destination = self.tree / "default/i18n" / language
+            destination.mkdir(parents=True)
+            shutil.copyfile(upstream / "default/i18n" / language / "menu.json",
+                            destination / "menu.json")
+        self.adapt()
+        # Exercise upstream's real translation function, which runs after the
+        # FreeBSD menu rewrite, rather than just inspecting the rewritten JSON.
+        result = subprocess.run(["node", "-e", '''
+const fs = require('fs'), vm = require('vm');
+const model = vm.runInNewContext(fs.readFileSync(process.argv[1], 'utf8') +
+  '\\n({parseMenuJsonc, applyTranslations})');
+const rows = model.parseMenuJsonc(fs.readFileSync(process.argv[2], 'utf8'));
+const catalog = JSON.parse(fs.readFileSync(process.argv[3], 'utf8'));
+console.log(JSON.stringify(Object.fromEntries(model.applyTranslations(rows, catalog).map(row => [row.id, row.label]))));
+''', str(upstream / "shell/plugins/menu/MenuModel.js"),
+                str(self.tree / "default/omarchy/omarchy-menu.jsonc"),
+                str(self.tree / "default/i18n/en/menu.json")], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        labels = json.loads(result.stdout)
+        self.assertEqual(labels["learn.arch"], "FreeBSD Handbook")
+        self.assertEqual(labels["learn.omarchy"], "Daemonarchy")
+        self.assertEqual(labels["update.omarchy"], "Daemonarchy")
+        german = json.loads((self.tree / "default/i18n/de/menu.json").read_text())
+        self.assertNotIn("label", german.get("learn.arch", {}))
 
     @unittest.skipUnless(shutil.which("node"), "Node needed to exercise the QML settings functions")
     def test_bar_excludes_unqualified_indicators_from_defaults_and_existing_settings(self):
@@ -217,9 +274,9 @@ exit 17
         program += "const defaultIndicatorEntries = " + defaults + ";\n" + functions
         program += """
 assert.deepEqual(indicatorEntriesFromSettings({}), ['Reminder', 'NightLight', 'Dnd', 'StayAwake']);
-const old = {items: ['Dictation', 'Reminder', {id:'ScreenRecording'}, {id:'NightLight', detail:7}, 'UserPlugin']};
+const old = {items: ['Dictation', 'Reminder', {id:'ScreenRecording'}, 'PasswordlessSudo', {id:'RemoteSession'}, {id:'NightLight', detail:7}, 'UserPlugin']};
 assert.deepEqual(indicatorEntriesFromSettings(old), ['Reminder', {id:'NightLight', detail:7}, 'UserPlugin']);
-assert.equal(old.items.length, 5);
+assert.equal(old.items.length, 7);
 assert.deepEqual(indicatorEntriesFromSettings({indicators:['Dictation','ScreenRecording']}), []);
 """
         subprocess.run(["node", "-e", program], check=True, capture_output=True, text=True)
