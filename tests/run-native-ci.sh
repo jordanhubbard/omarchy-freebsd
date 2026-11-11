@@ -11,7 +11,7 @@ export OMARCHY_TEST_MENU="$(pwd)/omarchy/default/omarchy/omarchy-menu.jsonc"
 export OMARCHY_TEST_BINDINGS="$(pwd)/omarchy/default/hypr/bindings/applications.lua"
 cd adapters
 /usr/local/bin/python3.12 -c 'import gi; from gi.repository import Gio; print(Gio.AppInfo)'
-command -v bash node jq perl
+for tool in bash node jq perl; do command -v "$tool"; done
 /usr/local/bin/python3.12 -m unittest discover -s tests -v
 pw useradd compat_test -m
 su -m compat_test -c '/usr/local/bin/bash tests/bluetooth-audio.sh'
