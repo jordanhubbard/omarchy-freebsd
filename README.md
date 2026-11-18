@@ -90,6 +90,14 @@ may invoke it through polkit, while terminal callers use sudo. Command-routing
 and failure controls do not qualify a real firmware-UI reboot or graphical
 session; those still require a disposable native EFI guest.
 
+Transient workers honor `RuntimeMaxSec` using the native `timeout` process
+group. The power worker's 30-second bound includes children in that group,
+with a five-second kill grace if they ignore TERM. Numeric durations
+with optional seconds, minutes, hours or days suffixes are supported; unsupported
+duration syntax fails before the worker starts. The native regression checks
+actual daemon supervision, deadline exit, child termination and pidfile cleanup.
+This process control does not establish graphical OSD/session acceptance.
+
 ## License
 
 This repository is part of the Daemonarchy project. See [LICENSE](LICENSE) and [licenses/README.md](licenses/README.md) for which files are under which license.

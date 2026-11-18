@@ -10,7 +10,14 @@
 unit=""
 delay=""
 wait_for_exit=0
+runtime_max=""
 declare -a env_assignments=()
+
+service_property() {
+  case $1 in
+    RuntimeMaxSec=*) runtime_max=${1#*=} ;;
+  esac
+}
 
 while (($#)); do
   case "$1" in
@@ -22,8 +29,10 @@ while (($#)); do
     --on-active) delay=$2; shift ;;
     --setenv=* | -E=*) env_assignments+=("${1#*=}") ;;
     -E | --setenv) env_assignments+=("$2"); shift ;;
-    --property=* | -p=* | --timer-property=* | --description=* | --slice=* | --working-directory=* | --uid=* | --gid=* | --nice=* | --service-type=*) ;;
-    -p | --property | --timer-property | --description | --slice | --working-directory | --uid | --gid | --nice | --service-type) shift ;;
+    --property=* | -p=*) service_property "${1#*=}" ;;
+    -p | --property) service_property "$2"; shift ;;
+    --timer-property=* | --description=* | --slice=* | --working-directory=* | --uid=* | --gid=* | --nice=* | --service-type=*) ;;
+    --timer-property | --description | --slice | --working-directory | --uid | --gid | --nice | --service-type) shift ;;
     --) shift; break ;;
     -*) echo "systemd-run: ignoring unsupported option $1" >&2 ;;
     *) break ;;
@@ -47,6 +56,16 @@ for assignment in "${env_assignments[@]}"; do
     export "$name"
   fi
 done
+
+if [[ -n $runtime_max && $runtime_max != infinity ]]; then
+  if [[ ! $runtime_max =~ ^[0-9]+([.][0-9]+)?[smhd]?$ ]]; then
+    echo "systemd-run: unsupported RuntimeMaxSec '$runtime_max'" >&2
+    exit 2
+  fi
+  # timeout owns a process group, so its background children share the limit.
+  # Bound cleanup if a worker ignores the initial TERM.
+  set -- /usr/bin/timeout -k 5s "$runtime_max" "$@"
+fi
 
 if ((wait_for_exit)) && [[ -z $delay ]]; then
   "$@"

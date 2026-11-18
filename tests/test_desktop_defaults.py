@@ -3,7 +3,9 @@ import json
 import os
 from pathlib import Path
 import re
+import select
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -73,6 +75,62 @@ class DesktopDefaults(unittest.TestCase):
             env=env, capture_output=True, text=True)
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(result.stdout, "")
+
+    @unittest.skipUnless(sys.platform.startswith("freebsd"), "requires native daemon and kqueue")
+    def test_transient_runtime_limit_terminates_native_worker_and_child(self):
+        shim = self.substituted("compat/systemd-run")
+        runtime = self.work / "runtime"
+        units = runtime / "omarchy-units"
+        units.mkdir(parents=True)
+        pidfile = units / "runtime-limit.service.pid"
+        childfile = units / "actual-child.pid"
+        env = dict(self.env, XDG_RUNTIME_DIR=str(runtime))
+        watch = select.kqueue()
+        self.addCleanup(watch.close)
+        directory = os.open(units, os.O_RDONLY)
+        self.addCleanup(os.close, directory)
+        watch.control([select.kevent(directory, filter=select.KQ_FILTER_VNODE,
+                       flags=select.KQ_EV_ADD | select.KQ_EV_CLEAR,
+                       fflags=select.KQ_NOTE_WRITE)], 0, 0)
+
+        def stop_owned_unit():
+            if pidfile.exists():
+                try:
+                    os.kill(int(pidfile.read_text()), signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+
+        self.addCleanup(stop_owned_unit)
+        started = time.monotonic()
+        result = subprocess.run(
+            ["bash", str(shim), "--user", "--collect", "--quiet",
+             "--property=Type=exec", "--property=RuntimeMaxSec=2s",
+             "--unit=runtime-limit", sys.executable, "-c",
+             "import os,pathlib,time; "
+             f"p=pathlib.Path({str(childfile) + '.tmp'!r}); "
+             "p.write_text(str(os.getpid())); "
+             f"p.rename({str(childfile)!r}); "
+             "time.sleep(20)"], env=env, capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        deadline = started + 4
+        while not (pidfile.exists() and pidfile.stat().st_size and
+                   childfile.exists() and childfile.stat().st_size):
+            remaining = deadline - time.monotonic()
+            self.assertGreater(remaining, 0, "native worker did not start")
+            watch.control([], 1, remaining)
+        supervisor = int(pidfile.read_text())
+        child = int(childfile.read_text())
+        exits = select.kqueue()
+        self.addCleanup(exits.close)
+        events = exits.control([select.kevent(supervisor, filter=select.KQ_FILTER_PROC,
+                               flags=select.KQ_EV_ADD, fflags=select.KQ_NOTE_EXIT)], 1, 6)
+        self.assertTrue(events, "runtime limit left the native worker running")
+        self.assertGreaterEqual(time.monotonic() - started, 1.8)
+        self.assertLess(time.monotonic() - started, 8)
+        self.assertFalse(pidfile.exists(), "transient supervisor pidfile survived exit")
+        self.assertNotEqual(subprocess.run(
+            ["ps", "-p", str(child)], capture_output=True).returncode, 0,
+            "timed-out worker left its child running")
 
     def test_firmware_flag_cannot_fall_through_to_normal_reboot(self):
         self.command("firmware", 'printf "firmware %s\\n" "$*" >>"$TEST_OUTPUT"; exit 23\n')
