@@ -26,7 +26,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: jordanhubbard/omarchy
-          ref: 0519ad84340632307c812005e144fb41695065a9
+          ref: 853c91cea133c203fe199329b85278dc213ccf9c
           path: omarchy
           persist-credentials: false
       - name: Require capacity for this software test guest
