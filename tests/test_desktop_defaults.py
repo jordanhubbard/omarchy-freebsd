@@ -3,7 +3,9 @@ import json
 import os
 from pathlib import Path
 import re
+import select
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -73,6 +75,146 @@ class DesktopDefaults(unittest.TestCase):
             env=env, capture_output=True, text=True)
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(result.stdout, "")
+
+    @unittest.skipUnless(sys.platform.startswith("freebsd"), "requires native daemon and kqueue")
+    def test_transient_runtime_limit_terminates_native_worker_and_child(self):
+        shim = self.substituted("compat/systemd-run")
+        runtime = self.work / "runtime"
+        units = runtime / "omarchy-units"
+        units.mkdir(parents=True)
+        pidfile = units / "runtime-limit.service.pid"
+        childfile = units / "actual-child.pid"
+        env = dict(self.env, XDG_RUNTIME_DIR=str(runtime))
+        watch = select.kqueue()
+        self.addCleanup(watch.close)
+        directory = os.open(units, os.O_RDONLY)
+        self.addCleanup(os.close, directory)
+        watch.control([select.kevent(directory, filter=select.KQ_FILTER_VNODE,
+                       flags=select.KQ_EV_ADD | select.KQ_EV_CLEAR,
+                       fflags=select.KQ_NOTE_WRITE)], 0, 0)
+
+        def stop_owned_unit():
+            if pidfile.exists():
+                try:
+                    os.kill(int(pidfile.read_text()), signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+
+        self.addCleanup(stop_owned_unit)
+        started = time.monotonic()
+        result = subprocess.run(
+            ["bash", str(shim), "--user", "--collect", "--quiet",
+             "--property=Type=exec", "--property=RuntimeMaxSec=2s",
+             "--unit=runtime-limit", sys.executable, "-c",
+             "import os,pathlib,time; "
+             f"p=pathlib.Path({str(childfile) + '.tmp'!r}); "
+             "p.write_text(str(os.getpid())); "
+             f"p.rename({str(childfile)!r}); "
+             "time.sleep(20)"], env=env, capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        deadline = started + 4
+        while not (pidfile.exists() and pidfile.stat().st_size and
+                   childfile.exists() and childfile.stat().st_size):
+            remaining = deadline - time.monotonic()
+            self.assertGreater(remaining, 0, "native worker did not start")
+            watch.control([], 1, remaining)
+        supervisor = int(pidfile.read_text())
+        child = int(childfile.read_text())
+        exits = select.kqueue()
+        self.addCleanup(exits.close)
+        events = exits.control([select.kevent(supervisor, filter=select.KQ_FILTER_PROC,
+                               flags=select.KQ_EV_ADD, fflags=select.KQ_NOTE_EXIT)], 1, 6)
+        self.assertTrue(events, "runtime limit left the native worker running")
+        self.assertGreaterEqual(time.monotonic() - started, 1.8)
+        self.assertLess(time.monotonic() - started, 8)
+        self.assertFalse(pidfile.exists(), "transient supervisor pidfile survived exit")
+        self.assertNotEqual(subprocess.run(
+            ["ps", "-p", str(child)], capture_output=True).returncode, 0,
+            "timed-out worker left its child running")
+
+    def test_firmware_flag_cannot_fall_through_to_normal_reboot(self):
+        self.command("firmware", 'printf "firmware %s\\n" "$*" >>"$TEST_OUTPUT"; exit 23\n')
+        self.command("shutdown", 'printf "ordinary reboot\\n" >>"$TEST_OUTPUT"\n')
+        shim = self.substituted("compat/systemctl")
+        shim.write_text(shim.read_text().replace(
+            "/usr/local/bin/omarchy-firmware-setup", str(self.bin / "firmware")).replace(
+            "exec shutdown -r now", f'exec "{self.bin / "shutdown"}" -r now'))
+        for args, expected in ((["reboot", "--firmware-setup", "--no-wall"], 23),
+                               (["--user", "reboot", "--firmware-setup"], 2),
+                               (["poweroff", "--firmware-setup"], 2),
+                               (["reboot", "--firmware-setup", "unit.service"], 2)):
+            result = subprocess.run(["bash", str(shim)] + args, env=self.env,
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, expected, result.stderr)
+        self.assertEqual(Path(self.env["TEST_OUTPUT"]).read_text(), "firmware --reboot\n")
+
+    def test_real_power_worker_checks_native_firmware_before_closing_apps(self):
+        worker = self.tree / "bin/omarchy-system"
+        shutil.copyfile(ROUTER.parent / "omarchy-system", worker)
+        self.adapt()
+        self.command("omarchy-firmware-setup", '''
+printf 'firmware %s\\n' "$*" >>"$TEST_OUTPUT"
+exit "${FIRMWARE_STATUS:-1}"
+''')
+        self.command("omarchy-i18n", 'printf "%s\\n" "$1"\n')
+        for name in ("omarchy-session", "omarchy-state", "omarchy-hyprland-window-close-all",
+                     "omarchy-notification-send", "omarchy-osd", "omarchy-shell", "systemctl"):
+            self.command(name, f'printf "{name} %s\\n" "$*" >>"$TEST_OUTPUT"\n')
+        output = Path(self.env["TEST_OUTPUT"])
+        rejected = subprocess.run(["bash", str(worker), "firmware", "--execute"],
+                                  env=self.env, capture_output=True, text=True)
+        self.assertNotEqual(rejected.returncode, 0)
+        calls = output.read_text()
+        self.assertIn("firmware --supported", calls)
+        self.assertNotIn("omarchy-hyprland-window-close-all", calls)
+        self.assertNotIn("systemctl reboot", calls)
+        output.unlink()
+        accepted = subprocess.run(["bash", str(worker), "firmware", "--execute"],
+                                  env=dict(self.env, FIRMWARE_STATUS="0"),
+                                  capture_output=True, text=True)
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+        calls = output.read_text()
+        self.assertLess(calls.index("firmware --supported"),
+                        calls.index("omarchy-hyprland-window-close-all"))
+        self.assertIn("systemctl reboot --firmware-setup --no-wall", calls)
+
+    @unittest.skipUnless(os.geteuid() == 0, "root-only native firmware helper control")
+    def test_firmware_request_failure_and_rejected_reboot_preserve_prior_state(self):
+        # These fixtures replace only the two native effectful commands. The
+        # original helper owns capability validation, ordering and rollback.
+        self.command("efibootmgr", '''
+printf 'efi %s\\n' "$*" >>"$TEST_OUTPUT"
+case "$*" in
+  "") printf '%s\\n' "$EFI_STATE"; exit "${EFI_QUERY_EXIT:-0}" ;;
+  -f) exit "${EFI_SET_EXIT:-0}" ;;
+  -F) exit 0 ;;
+  *) exit 99 ;;
+esac
+''')
+        self.command("shutdown", 'printf "shutdown %s\\n" "$*" >>"$TEST_OUTPUT"; exit "${SHUTDOWN_EXIT:-0}"\n')
+        helper = self.substituted("freebsd-bin/omarchy-firmware-setup")
+        helper.write_text(helper.read_text().replace(
+            "/usr/sbin/efibootmgr", str(self.bin / "efibootmgr")).replace(
+            "/sbin/shutdown", str(self.bin / "shutdown")))
+        output = Path(self.env["TEST_OUTPUT"])
+        cases = (
+            ({"EFI_STATE": "BootCurrent: 0000"}, 1, ["efi "]),
+            ({"EFI_QUERY_EXIT": "7"}, 1, ["efi "]),
+            ({"EFI_SET_EXIT": "9"}, 1, ["efi ", "efi -f"]),
+            ({"SHUTDOWN_EXIT": "42"}, 42,
+             ["efi ", "efi -f", "shutdown -r now", "efi -F"]),
+            ({"EFI_STATE": "Boot to FW : true", "SHUTDOWN_EXIT": "42"}, 42,
+             ["efi ", "efi -f", "shutdown -r now"]),
+            ({}, 0, ["efi ", "efi -f", "shutdown -r now"]),
+        )
+        for changes, expected, calls in cases:
+            with self.subTest(changes=changes):
+                output.unlink(missing_ok=True)
+                env = dict(self.env, EFI_STATE="Boot to FW : false") | changes
+                result = subprocess.run(["bash", "-p", str(helper), "--reboot"],
+                                        env=env, capture_output=True, text=True)
+                self.assertEqual(result.returncode, expected, result.stderr)
+                self.assertEqual(output.read_text().splitlines(), calls)
 
     def test_real_router_help_dispatch_metadata_and_exit_status(self):
         self.assertTrue(ROUTER.is_file(), "Set OMARCHY_TEST_ROUTER to the upstream router")

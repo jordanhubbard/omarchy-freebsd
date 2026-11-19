@@ -1,13 +1,16 @@
 // Omarchy's Wi-Fi and Bluetooth panels change network and Bluetooth state
-// through these two commands. On Arch, NetworkManager and BlueZ let an active
+// through these commands. On Arch, NetworkManager and BlueZ let an active
 // local session do the same without a password; FreeBSD's tools need root, so
 // let wheel run just these through pkexec, as that session, without one.
+// The firmware helper exposes only a support query and a firmware-UI reboot;
+// it needs root because /dev/efi is root-only.
 polkit.addRule(function(action, subject) {
   if (action.id == "org.freedesktop.policykit.exec" &&
       subject.local && subject.active && subject.isInGroup("wheel")) {
     var program = action.lookup("program");
     if (program == "%%PREFIX%%/bin/omarchy-wifi" ||
-        program == "%%PREFIX%%/bin/omarchy-bluetooth") {
+        program == "%%PREFIX%%/bin/omarchy-bluetooth" ||
+        program == "%%PREFIX%%/bin/omarchy-firmware-setup") {
       return polkit.Result.YES;
     }
   }

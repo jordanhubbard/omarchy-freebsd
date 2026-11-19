@@ -1,0 +1,52 @@
+#!/bin/bash -p
+
+# omarchy:summary=Check firmware setup support or reboot into its user interface
+# omarchy:args=<--supported|--reboot>
+# omarchy:hidden=true
+
+# /dev/efi is root-only. Keep this privileged interface limited to reading
+# firmware support and requesting one firmware-UI reboot. Privileged Bash
+# suppresses startup environment hooks before the first command.
+set -o pipefail
+
+if (( $# != 1 )); then
+  echo 'Usage: omarchy-firmware-setup <--supported|--reboot>' >&2
+  exit 2
+fi
+case $1 in
+  -h | --help) echo 'Usage: omarchy-firmware-setup <--supported|--reboot>'; exit 0 ;;
+  --supported | --reboot) ;;
+  *) echo 'Usage: omarchy-firmware-setup <--supported|--reboot>' >&2; exit 2 ;;
+esac
+
+if (( EUID != 0 )); then
+  if [[ -t 0 ]]; then
+    exec %%LOCALBASE%%/bin/sudo -- %%PREFIX%%/bin/omarchy-firmware-setup "$1"
+  else
+    exec %%LOCALBASE%%/bin/pkexec %%PREFIX%%/bin/omarchy-firmware-setup "$1"
+  fi
+fi
+
+# efibootmgr prints this line only when OsIndicationsSupported advertises
+# BOOT_TO_FW_UI. It also reads the existing request, without changing it.
+state=$(/usr/sbin/efibootmgr) || exit 1
+case $'\n'$state$'\n' in
+  *$'\nBoot to FW : true\n'*) already_requested=true ;;
+  *$'\nBoot to FW : false\n'*) already_requested=false ;;
+  *) echo 'Firmware setup is unavailable.' >&2; exit 1 ;;
+esac
+[[ $1 == "--reboot" ]] || exit 0
+
+# The native utility preserves every other OsIndications bit. A failed
+# request must never degrade to an ordinary reboot.
+/usr/sbin/efibootmgr -f || exit 1
+if /sbin/shutdown -r now; then
+  exit 0
+else
+  status=$?
+  # Undo only the request made here, never one that was already pending.
+  if ! $already_requested; then
+    /usr/sbin/efibootmgr -F || echo 'Could not clear the rejected firmware reboot request.' >&2
+  fi
+  exit "$status"
+fi

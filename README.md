@@ -80,6 +80,24 @@ Run `python3 -m unittest discover -s tests -v` in the selected native package
 environment. Browser launch tests need functional PyGObject/GIO; the QML
 settings and translation logic checks need Node and explicitly skip without it.
 
+Firmware setup uses FreeBSD's `efibootmgr` capability and request handling.
+The exit worker checks support before closing applications; a firmware request
+failure cannot fall back to an ordinary reboot. If shutdown is rejected, only
+a newly made firmware request is cleared, preserving a request already pending.
+The EFI loader environment controls menu visibility on both amd64 and arm64.
+The restricted helper needs root for `/dev/efi`; an active local wheel session
+may invoke it through polkit, while terminal callers use sudo. Command-routing
+and failure controls do not qualify a real firmware-UI reboot or graphical
+session; those still require a disposable native EFI guest.
+
+Transient workers honor `RuntimeMaxSec` using the native `timeout` process
+group. The power worker's 30-second bound includes children in that group,
+with a five-second kill grace if they ignore TERM. Numeric durations
+with optional seconds, minutes, hours or days suffixes are supported; unsupported
+duration syntax fails before the worker starts. The native regression checks
+actual daemon supervision, deadline exit, child termination and pidfile cleanup.
+This process control does not establish graphical OSD/session acceptance.
+
 ## License
 
 This repository is part of the Daemonarchy project. See [LICENSE](LICENSE) and [licenses/README.md](licenses/README.md) for which files are under which license.

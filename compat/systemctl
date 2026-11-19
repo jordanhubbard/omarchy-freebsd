@@ -22,6 +22,7 @@ set -o pipefail
 OMARCHY_DATADIR="%%DATADIR%%"
 
 user_mode=0
+firmware_setup=0
 quiet=0
 now=0
 value_only=0
@@ -36,6 +37,7 @@ while (($#)); do
   case "$1" in
     --user) user_mode=1 ;;
     --system) user_mode=0 ;;
+    --firmware-setup) firmware_setup=1 ;;
     -q | --quiet) quiet=1 ;;
     --now) now=1 ;;
     --value) value_only=1 ;;
@@ -803,6 +805,14 @@ system_main() {
 
   return "$status"
 }
+
+if ((firmware_setup)); then
+  if ((user_mode)) || [[ $verb != "reboot" ]] || ((${#args[@]})); then
+    echo 'systemctl: --firmware-setup requires a system reboot without unit arguments' >&2
+    exit 2
+  fi
+  exec %%PREFIX%%/bin/omarchy-firmware-setup --reboot
+fi
 
 if [[ -z $verb ]]; then
   verb=list-units

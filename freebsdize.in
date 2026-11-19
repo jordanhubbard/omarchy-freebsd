@@ -106,6 +106,10 @@ for line in path.read_text().splitlines():
         value["when"] = value["when"] or "omarchy-cmd-present " + new
     elif key == "update.omarchy":
         value["label"] = "Daemonarchy"
+    elif key == "system.firmware":
+        # The EFI loader publishes this on both amd64 and arm64. The exit
+        # worker checks the actual firmware capability before closing apps.
+        value["when"] = "kenv -q efi-version >/dev/null 2>&1"
     elif key in {"install.package", "remove.package"}:
         value.update(icon="󰏖", label="Packages", action="uwsm-app -- octopkg")
     if value.get("label") != original_label:
@@ -290,6 +294,38 @@ MISEGUARD
 rewrite() {
   local tree=$1 d dirs=()
   desktop_defaults "$tree"
+  # Keep upstream's exit worker and session lifecycle, replacing only the
+  # Linux login1 capability probe with the native privileged EFI query.
+  "$PYTHON_CMD" - "$tree/bin/omarchy-system" <<'PYPOWER'
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+if path.is_file():
+    text = path.read_text()
+    upstream = '''  # systemctl only finds out the firmware can't do it after the apps are gone.
+  if [[ $action == "firmware" ]]; then
+    local answer
+    answer=$(busctl call org.freedesktop.login1 /org/freedesktop/login1 org.freedesktop.login1.Manager CanRebootToFirmwareSetup 2>/dev/null)
+    if [[ $answer != 's "yes"' ]]; then
+      return 1
+    fi
+  fi
+'''
+    native = '''  if [[ $action == "firmware" ]] && ! omarchy-firmware-setup --supported; then
+    return 1
+  fi
+'''
+    if "CanRebootToFirmwareSetup" in text:
+        if text.count(upstream) != 1:
+            raise SystemExit("freebsdize: review changed upstream firmware capability probe")
+        text = text.replace(upstream, native)
+    elif "omarchy-firmware-setup --supported" not in text and 'firmware)' in text:
+        marker = "exit_session() {\n"
+        if text.count(marker) != 1:
+            raise SystemExit("freebsdize: cannot place native firmware capability check")
+        text = text.replace(marker, marker + native)
+    path.write_text(text)
+PYPOWER
   for d in bin "${DATA_DIRS[@]}" etc; do
     [[ -d $tree/$d ]] && dirs+=("$tree/$d")
   done
