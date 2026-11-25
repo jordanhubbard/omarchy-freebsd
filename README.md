@@ -80,6 +80,15 @@ Run `python3 -m unittest discover -s tests -v` in the selected native package
 environment. Browser launch tests need functional PyGObject/GIO; the QML
 settings and translation logic checks need Node and explicitly skip without it.
 
+The native session-helper tests build `pdeathsig.c` and `session-reaper.c`
+with the base compiler and exercise parent-death delivery, exit statuses,
+signal forwarding and cleanup of detached, SIGTERM-resistant descendants.
+Run them separately with `python3 -m unittest discover -s tests -p 'test_session_helpers.py' -v`. Runtime controls run
+without root, inside their own reaper scope, and check that an unrelated
+same-user sibling survives. Set `OMARCHY_TEST_ARTIFACTS` to an existing,
+traversable directory to retain binaries, the compiled ABI probe and per-case
+records. These controls do not qualify a graphical desktop session.
+
 Firmware setup uses FreeBSD's `efibootmgr` capability and request handling.
 The exit worker checks support before closing applications; a firmware request
 failure cannot fall back to an ordinary reboot. If shutdown is rejected, only
